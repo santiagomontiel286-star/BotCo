@@ -9,11 +9,11 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.25';
 
 const KRAKEN_API = "https://api.kraken.com";
-const PAIRS = ["XBTUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"];
-const PAIR_LABELS = { XBTUSDT: "BTC/USDT", ETHUSDT: "ETH/USDT", SOLUSDT: "SOL/USDT", XRPUSDT: "XRP/USDT" };
+const PAIRS = ["XBTEUR", "ETHEUR", "SOLEUR", "XRPEUR"];
+const PAIR_LABELS = { XBTEUR: "BTC/EUR", ETHEUR: "ETH/EUR", SOLEUR: "SOL/EUR", XRPEUR: "XRP/EUR" };
 
 // Min order volumes for each pair (Kraken limits)
-const MIN_VOL = { XBTUSDT: 0.0002, ETHUSDT: 0.005, SOLUSDT: 0.5, XRPUSDT: 10 };
+const MIN_VOL = { XBTEUR: 0.0002, ETHEUR: 0.005, SOLEUR: 0.5, XRPEUR: 10 };
 
 // Bot allocations
 const BOTS = [
@@ -22,6 +22,13 @@ const BOTS = [
   { id: "ai",     name: "AI Sentiment",    pct: 25, strategy: "momentum" },
   { id: "risk",   name: "Risk Guardian",   pct: 15, strategy: "breakout" },
 ];
+
+// ── Nonce counter (strictly increasing within one execution) ─────────────────
+let _nonceBase = Date.now() * 1000;
+let _nonceSeq = 0;
+function nextNonce() {
+  return (_nonceBase + _nonceSeq++).toString();
+}
 
 // ── Kraken signing ────────────────────────────────────────────────────────────
 async function krakenSign(path, nonce, postData, apiSecret) {
@@ -38,7 +45,7 @@ async function krakenSign(path, nonce, postData, apiSecret) {
 }
 
 async function krakenPrivate(endpoint, params, apiKey, apiSecret) {
-  const nonce = Date.now().toString();
+  const nonce = nextNonce();
   const body = new URLSearchParams({ nonce, ...params }).toString();
   const path = `/0/private/${endpoint}`;
   const signature = await krakenSign(path, nonce, body, apiSecret);
@@ -142,7 +149,7 @@ function getSignal(strategy, closes) {
 }
 
 // ── Kraken pair name mapping ──────────────────────────────────────────────────
-const OHLC_PAIR = { XBTUSDT: "XBTUSDT", ETHUSDT: "ETHUSDT", SOLUSDT: "SOLUSDT", XRPUSDT: "XRPUSDT" };
+const OHLC_PAIR = { XBTEUR: "XBTEUR", ETHEUR: "ETHEUR", SOLEUR: "SOLEUR", XRPEUR: "XRPEUR" };
 
 async function getCloses(pair) {
   const data = await krakenPublic("OHLC", { pair: OHLC_PAIR[pair], interval: 5 });
@@ -221,6 +228,10 @@ Deno.serve(async (req) => {
     const openOrders = await getOpenOrders(apiKey, apiSecret);
     const openPairs = new Set(Object.values(openOrders).map(o => o.descr?.pair));
 
+    // Get open trades per bot to avoid double-buying
+    const openTrades = await base44.asServiceRole.entities.Trade.filter({ status: "open" });
+    const openBotPairs = new Set(openTrades.map(t => `${t.bot_name}::${t.pair}`));
+
     for (const pair of PAIRS) {
       const closes = await getCloses(pair);
       if (!closes || closes.length < 25) {
@@ -239,12 +250,23 @@ Deno.serve(async (req) => {
 
       for (const bot of BOTS) {
         const botCapital = (capital * bot.pct) / 100;
-        const tradeCapital = botCapital * 0.10; // Use 10% of bot's capital per trade
+        // Use full bot capital per trade (one active trade per bot at a time)
+        const tradeCapital = botCapital;
         const minVol = MIN_VOL[pair];
-        const volume = Math.floor((tradeCapital / currentPrice) / minVol) * minVol;
+        const rawVolume = tradeCapital / currentPrice;
 
-        if (volume < minVol) {
-          results.push({ pair, bot: bot.name, status: "skip", reason: `volume ${volume.toFixed(8)} below minimum ${minVol}` });
+        if (rawVolume < minVol) {
+          results.push({ pair, bot: bot.name, status: "skip", reason: `need $${(minVol * currentPrice).toFixed(2)} min, have $${tradeCapital.toFixed(2)}` });
+          continue;
+        }
+
+        // Round to 6 decimal places for the order
+        const volume = Math.floor(rawVolume * 1e6) / 1e6;
+
+        // Skip if this bot already has an open trade on this pair
+        const botPairKey = `${bot.name}::${PAIR_LABELS[pair] || pair}`;
+        if (openBotPairs.has(botPairKey)) {
+          results.push({ pair, bot: bot.name, status: "skip", reason: "open trade exists" });
           continue;
         }
 
