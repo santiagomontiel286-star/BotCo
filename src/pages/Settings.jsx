@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Settings as SettingsIcon, Eye, EyeOff, Save, ExternalLink, ShieldCheck, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useToast } from "@/components/ui/use-toast";
+import { toast } from "sonner";
 
 const SESSION_KEY = "botco_api_keys";
 
@@ -53,7 +53,6 @@ export default function SettingsPage() {
   const [showSecrets, setShowSecrets] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [remembered, setRemembered] = useState(false);
-  const { toast } = useToast();
 
   // Load from sessionStorage on mount
   useEffect(() => {
@@ -75,20 +74,20 @@ export default function SettingsPage() {
     saveToSession({ binanceKey, binanceSecret, krakenKey, krakenSecret });
     setRemembered(true);
     setShowConfirm(false);
-    toast({ title: "✅ Configuración guardada y recordada", description: "Las credenciales se mantendrán hasta que cierres el navegador." });
+    toast.success("Configuración guardada y recordada", { description: "Las credenciales se mantendrán hasta que cierres el navegador." });
   };
 
   const handleDeclineRemember = () => {
     sessionStorage.removeItem(SESSION_KEY);
     setRemembered(false);
     setShowConfirm(false);
-    toast({ title: "✅ Configuración guardada", description: "Las credenciales no se recordarán al recargar." });
+    toast.success("Configuración guardada", { description: "Las credenciales no se recordarán al recargar." });
   };
 
   const handleForget = () => {
     sessionStorage.removeItem(SESSION_KEY);
     setRemembered(false);
-    toast({ title: "🗑️ Credenciales olvidadas", description: "Las claves han sido eliminadas de la sesión." });
+    toast.success("Credenciales olvidadas", { description: "Las claves han sido eliminadas de la sesión." });
   };
 
   return (

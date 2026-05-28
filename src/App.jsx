@@ -22,6 +22,7 @@ import WalletPage from './pages/Wallet';
 import SettingsPage from './pages/Settings';
 import Alerts from './pages/Alerts';
 import ScrollToTop from './components/ScrollToTop';
+import { Toaster as SonnerToaster } from 'sonner';
 
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError, navigateToLogin } = useAuth();
@@ -81,6 +82,7 @@ function App() {
           <AuthenticatedApp />
         </Router>
         <Toaster />
+        <SonnerToaster position="top-right" richColors closeButton />
       </QueryClientProvider>
     </AuthProvider>
   )

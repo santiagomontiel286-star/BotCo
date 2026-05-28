@@ -125,7 +125,7 @@ function ActivationModal({ krakenBalance, portfolio, onActivate, onClose }) {
         )}
 
         {step === 2 && (
-          <>
+          <div onKeyDown={(e) => { if (e.key === 'Enter') onActivate(parsed); }} tabIndex={-1}>
             <div className="bg-muted/50 rounded-xl p-4 mb-4 border border-border/50 space-y-3">
               <div className="flex justify-between items-center">
                 <span className="text-xs text-muted-foreground">Capital asignado</span>
@@ -155,7 +155,7 @@ function ActivationModal({ krakenBalance, portfolio, onActivate, onClose }) {
                 <Rocket className="w-4 h-4" /> Activar bots ahora
               </Button>
             </div>
-          </>
+          </div>
         )}
       </div>
     </div>
