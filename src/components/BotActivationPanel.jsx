@@ -220,6 +220,7 @@ function ActivePanel({ capital, pnl, trades, onStop }) {
 // Principal
 export default function BotActivationPanel() {
   const [krakenBalance, setKrakenBalance] = useState(0);
+  const [balanceError, setBalanceError] = useState(false);
   const [loadingBalance, setLoadingBalance] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [active, setActive] = useState(false);
@@ -230,13 +231,19 @@ export default function BotActivationPanel() {
   useEffect(() => {
     const fetchBalance = async () => {
       setLoadingBalance(true);
-      const res = await base44.functions.invoke('krakenAccount', {});
-      const bal = res.data?.balance;
-      if (bal) {
-        const usd = parseFloat(bal["ZUSD"] || bal["USD"] || 0);
-        setKrakenBalance(usd);
+      setBalanceError(false);
+      try {
+        const res = await base44.functions.invoke('krakenAccount', {});
+        const bal = res.data?.balance;
+        if (bal) {
+          const usd = parseFloat(bal["ZUSD"] || bal["USD"] || 0);
+          setKrakenBalance(usd);
+        }
+      } catch {
+        setBalanceError(true);
+      } finally {
+        setLoadingBalance(false);
       }
-      setLoadingBalance(false);
     };
     fetchBalance();
   }, []);
@@ -272,12 +279,14 @@ export default function BotActivationPanel() {
               Balance Kraken USD:{" "}
               {loadingBalance
                 ? <span className="animate-pulse">Cargando...</span>
-                : <strong className="text-foreground">{fmt(krakenBalance)}</strong>
+                : balanceError
+                  ? <span className="text-destructive">Error al conectar con Kraken — verifica las API keys</span>
+                  : <strong className="text-foreground">{fmt(krakenBalance)}</strong>
               }
             </p>
             <p className="text-[11px] text-muted-foreground mt-0.5">Los bots operarán 24/7 hasta que ordenes la parada inteligente</p>
           </div>
-          <Button onClick={() => setModalOpen(true)} className="gap-2" disabled={loadingBalance || krakenBalance <= 0}>
+          <Button onClick={() => setModalOpen(true)} className="gap-2" disabled={loadingBalance || balanceError || krakenBalance <= 0}>
             <Rocket className="w-4 h-4" /> Activar bots
           </Button>
         </div>
