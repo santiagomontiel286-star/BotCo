@@ -30,14 +30,19 @@ export default function AIAnalysis() {
   const fetchAnalysis = async () => {
     setLoading(true);
     setError(null);
-    const res = await base44.functions.invoke('cryptoNews', {});
-    if (res.data?.analysis) {
-      setAnalysis(res.data.analysis);
-      setLastUpdated(new Date());
-    } else {
-      setError("No se pudo obtener el análisis");
+    try {
+      const res = await base44.functions.invoke('cryptoNews', {});
+      if (res.data?.analysis) {
+        setAnalysis(res.data.analysis);
+        setLastUpdated(new Date());
+      } else {
+        setError("No se pudo obtener el análisis. Intenta de nuevo.");
+      }
+    } catch {
+      setError("Error al conectar con el servicio de noticias. Intenta de nuevo.");
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   useEffect(() => { fetchAnalysis(); }, []);
