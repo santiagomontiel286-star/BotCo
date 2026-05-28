@@ -30,7 +30,12 @@ export default function Dashboard() {
     }
   };
 
-  useEffect(() => { fetchKrakenBalance(); }, []);
+  useEffect(() => {
+    fetchKrakenBalance();
+    // Keep connection alive: re-fetch every 30s automatically
+    const interval = setInterval(fetchKrakenBalance, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   const totalCapital = bots.reduce((s, b) => s + (b.capital || 0), 0);
   const totalProfit = bots.length ? bots.reduce((s, b) => s + (b.profit || 0), 0) / bots.length : 0;

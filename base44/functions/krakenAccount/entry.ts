@@ -10,10 +10,10 @@ async function signKraken(path, postData, secret) {
   return btoa(String.fromCharCode(...new Uint8Array(signature)));
 }
 
-async function krakenPrivate(path, params = {}) {
+async function krakenPrivate(path, params = {}, nonceOffset = 0) {
   const apiKey = Deno.env.get('KRAKEN_API_KEY');
   const apiSecret = Deno.env.get('KRAKEN_API_SECRET');
-  const nonce = Date.now().toString();
+  const nonce = (Date.now() * 1000 + nonceOffset).toString();
   const postData = `nonce=${nonce}` + Object.entries(params).map(([k, v]) => `&${k}=${v}`).join('');
   const sign = await signKraken(path, postData, apiSecret);
 
@@ -34,11 +34,10 @@ Deno.serve(async (req) => {
   const user = await base44.auth.me();
   if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const [balanceData, tradesData, openOrdersData] = await Promise.all([
-    krakenPrivate('/0/private/Balance'),
-    krakenPrivate('/0/private/TradesHistory', { trades: true }),
-    krakenPrivate('/0/private/OpenOrders', { trades: true }),
-  ]);
+  // Sequential calls to avoid nonce collisions (Kraken requires strictly increasing nonces)
+  const balanceData = await krakenPrivate('/0/private/Balance', {}, 0);
+  const openOrdersData = await krakenPrivate('/0/private/OpenOrders', { trades: true }, 1);
+  const tradesData = await krakenPrivate('/0/private/TradesHistory', { trades: true }, 2);
 
   if (balanceData.error?.length) {
     return Response.json({ error: balanceData.error[0] }, { status: 400 });

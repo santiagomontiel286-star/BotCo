@@ -251,7 +251,19 @@ export default function BotActivationPanel() {
       }
   };
 
-  useEffect(() => { fetchBalance(); }, []);
+  useEffect(() => {
+    fetchBalance();
+    // Re-fetch balance every 45s to mantain connection alive
+    const interval = setInterval(fetchBalance, 45000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // When bots are active, refresh more frequently (every 20s)
+  useEffect(() => {
+    if (!active) return;
+    const interval = setInterval(fetchBalance, 20000);
+    return () => clearInterval(interval);
+  }, [active]);
 
   useEffect(() => {
     if (!active) return;
