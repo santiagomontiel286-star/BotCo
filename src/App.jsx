@@ -21,6 +21,7 @@ import History from './pages/History';
 import WalletPage from './pages/Wallet';
 import SettingsPage from './pages/Settings';
 import Alerts from './pages/Alerts';
+import SessionReports from './pages/SessionReports';
 import ScrollToTop from './components/ScrollToTop';
 import { Toaster as SonnerToaster } from 'sonner';
 
@@ -65,6 +66,7 @@ const AuthenticatedApp = () => {
           <Route path="/wallet" element={<WalletPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/alerts" element={<Alerts />} />
+          <Route path="/sessions" element={<SessionReports />} />
         </Route>
       </Route>
       <Route path="*" element={<PageNotFound />} />

@@ -1,0 +1,56 @@
+{
+  "name": "SessionReport",
+  "type": "object",
+  "properties": {
+    "started_at": {
+      "type": "string"
+    },
+    "ended_at": {
+      "type": "string"
+    },
+    "duration_seconds": {
+      "type": "number"
+    },
+    "assigned_capital": {
+      "type": "number"
+    },
+    "pnl": {
+      "type": "number"
+    },
+    "pnl_pct": {
+      "type": "number"
+    },
+    "trades_count": {
+      "type": "number"
+    },
+    "win_trades": {
+      "type": "number"
+    },
+    "loss_trades": {
+      "type": "number"
+    },
+    "win_rate": {
+      "type": "number"
+    },
+    "best_trade": {
+      "type": "number"
+    },
+    "worst_trade": {
+      "type": "number"
+    },
+    "avg_trade": {
+      "type": "number"
+    },
+    "bot_breakdown": {
+      "type": "string"
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "assigned_capital",
+    "pnl",
+    "trades_count"
+  ]
+}

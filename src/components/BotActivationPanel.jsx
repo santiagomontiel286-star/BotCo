@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { TrendingUp, RotateCcw, Brain, Shield, X, AlertTriangle, Rocket, Square, RefreshCw } from "lucide-react";
 import LiveTradingChart from "./LiveTradingChart";
+import SessionReportModal from "./SessionReportModal";
 
 const fmt = (n) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(n);
@@ -176,7 +177,7 @@ function ActivePanel({ capital, pnl, trades, onStop }) {
   const mm = String(Math.floor((elapsed % 3600) / 60)).padStart(2, "0");
   const ss = String(elapsed % 60).padStart(2, "0");
 
-  const handleStop = () => { setStopping(true); setTimeout(() => onStop(), 2500); };
+  const handleStop = () => { setStopping(true); setTimeout(() => onStop(elapsed), 2500); };
   const pnlPct = capital > 0 ? (pnl / capital) * 100 : 0;
   const isPositive = pnl >= 0;
 
@@ -240,6 +241,8 @@ export default function BotActivationPanel() {
   const { portfolio, totalUSD, balance: krakenBalances, loading: loadingBalance, error: balanceError, refresh: fetchBalance } = useKrakenData({ intervalMs: 30000 });
   const { active, assignedCapital, activate, deactivate } = useBotSession();
   const [modalOpen, setModalOpen] = useState(false);
+  const [reportData, setReportData] = useState(null);
+  const [sessionStart] = useState(new Date().toISOString());
   const [pnl, setPnl] = useState(0);
   const [trades, setTrades] = useState(0);
   const krakenBalance = totalUSD;
@@ -259,7 +262,10 @@ export default function BotActivationPanel() {
     setTrades(0);
     setModalOpen(false);
   };
-  const handleStop = () => { deactivate(); };
+  const handleStop = (elapsedSeconds) => {
+    setReportData({ capital: assignedCapital, pnl, trades, elapsedSeconds: elapsedSeconds || 0, startedAt: sessionStart });
+    deactivate();
+  };
 
   return (
     <div className="space-y-4">
@@ -350,6 +356,13 @@ export default function BotActivationPanel() {
           portfolio={portfolio}
           onActivate={handleActivate}
           onClose={() => setModalOpen(false)}
+        />
+      )}
+
+      {reportData && (
+        <SessionReportModal
+          sessionData={reportData}
+          onClose={() => setReportData(null)}
         />
       )}
     </div>

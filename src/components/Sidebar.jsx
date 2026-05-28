@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import { LayoutDashboard, Cpu, TrendingUp, Brain, Shield, Clock, Wallet, Settings, Bell, X, Activity } from "lucide-react";
+import { LayoutDashboard, Cpu, TrendingUp, Brain, Shield, Clock, Wallet, Settings, Bell, X, Activity, Archive } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navItems = [
@@ -11,6 +11,7 @@ const navItems = [
   { path: "/history", label: "Historial", icon: Clock },
   { path: "/wallet", label: "Wallet", icon: Wallet },
   { path: "/alerts", label: "Alertas", icon: Bell },
+  { path: "/sessions", label: "Sesiones", icon: Archive },
   { path: "/settings", label: "Ajustes", icon: Settings },
 ];
 
