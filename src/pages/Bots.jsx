@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { base44 } from "@/api/base44Client";
 import BotCard from "../components/BotCard";
 import BotActivationPanel from "../components/BotActivationPanel";
+import useKrakenData from "../hooks/useKrakenData";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -10,6 +11,7 @@ export default function Bots() {
   const [activeTab, setActiveTab] = useState("bots");
   const queryClient = useQueryClient();
   const { data: bots = [], isLoading } = useQuery({ queryKey: ["bots"], queryFn: () => base44.entities.Bot.list() });
+  const { totalUSD, trades: krakenTrades } = useKrakenData({ intervalMs: 60000 });
 
   const updateBot = useMutation({
     mutationFn: ({ id, data }) => base44.entities.Bot.update(id, data),
@@ -60,7 +62,7 @@ export default function Bots() {
         <>
           <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-4">
             {bots.map(bot => (
-              <BotCard key={bot.id} bot={bot} onStart={handleStart} onPause={handlePause} onStop={handleStop} />
+              <BotCard key={bot.id} bot={bot} onStart={handleStart} onPause={handlePause} onStop={handleStop} totalKrakenUSD={totalUSD} krakenTrades={krakenTrades} />
             ))}
           </div>
 

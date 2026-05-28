@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import useBotSession from "../hooks/useBotSession";
 import useKrakenData from "../hooks/useKrakenData";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -237,9 +238,8 @@ function ActivePanel({ capital, pnl, trades, onStop }) {
 // Principal
 export default function BotActivationPanel() {
   const { portfolio, totalUSD, balance: krakenBalances, loading: loadingBalance, error: balanceError, refresh: fetchBalance } = useKrakenData({ intervalMs: 30000 });
+  const { active, assignedCapital, activate, deactivate } = useBotSession();
   const [modalOpen, setModalOpen] = useState(false);
-  const [active, setActive] = useState(false);
-  const [assignedCapital, setAssignedCapital] = useState(0);
   const [pnl, setPnl] = useState(0);
   const [trades, setTrades] = useState(0);
   const krakenBalance = totalUSD;
@@ -254,13 +254,12 @@ export default function BotActivationPanel() {
   }, [active]);
 
   const handleActivate = (amount) => {
-    setAssignedCapital(amount);
+    activate(amount);
     setPnl(0);
     setTrades(0);
-    setActive(true);
     setModalOpen(false);
   };
-  const handleStop = () => { setActive(false); setAssignedCapital(0); };
+  const handleStop = () => { deactivate(); };
 
   return (
     <div className="space-y-4">

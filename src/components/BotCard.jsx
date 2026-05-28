@@ -1,7 +1,6 @@
-import { Play, Pause, Square, Activity } from "lucide-react";
+import { Play, Pause, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import MiniSparkline from "./MiniSparkline";
 
 const typeLabels = {
   trend_following: "Trend Following",
@@ -16,9 +15,25 @@ const statusColors = {
   stopped: "bg-muted text-muted-foreground"
 };
 
-export default function BotCard({ bot, onStart, onPause, onStop, compact }) {
+const TYPE_ALLOC = {
+  trend_following: 35,
+  mean_reversion: 25,
+  ai_sentiment: 25,
+  risk_guardian: 15,
+};
+
+export default function BotCard({ bot, onStart, onPause, onStop, compact, totalKrakenUSD = 0, krakenTrades = [] }) {
   const isActive = bot.status === "active";
-  const profitPositive = bot.profit >= 0;
+  const alloc = TYPE_ALLOC[bot.type] || 0;
+  // Use real Kraken-derived capital when available, else entity value
+  const realCapital = totalKrakenUSD > 0 ? (totalKrakenUSD * alloc) / 100 : (bot.capital || 0);
+  // Compute real trade count: approx proportional share of Kraken trades
+  const realTrades = krakenTrades.length > 0 ? Math.round(krakenTrades.length * alloc / 100) : (bot.trades_count || 0);
+  // Net PnL from real Kraken trades (proportional)
+  const netPnl = krakenTrades.length > 0
+    ? krakenTrades.reduce((s, t) => s + (t.net || 0), 0) * alloc / 100
+    : null;
+  const profitPositive = netPnl !== null ? netPnl >= 0 : (bot.profit || 0) >= 0;
 
   if (compact) {
     return (
@@ -30,10 +45,13 @@ export default function BotCard({ bot, onStart, onPause, onStop, compact }) {
           </span>
         </div>
         <div className="flex items-center justify-between">
-          <span className={cn("text-sm font-mono font-bold", profitPositive ? "text-profit" : "text-loss")}>
-            {profitPositive ? "+" : ""}{bot.profit?.toFixed(2)}%
-          </span>
-          <span className="text-xs text-muted-foreground font-mono">${bot.capital?.toLocaleString()}</span>
+          {netPnl !== null
+            ? <span className={cn("text-sm font-mono font-bold", profitPositive ? "text-profit" : "text-loss")}>
+                {netPnl >= 0 ? "+" : ""}{netPnl.toFixed(2)} USD
+              </span>
+            : <span className="text-xs text-muted-foreground">Sin datos reales</span>
+          }
+          <span className="text-xs text-muted-foreground font-mono">${realCapital.toLocaleString('en-US', { maximumFractionDigits: 2 })}</span>
         </div>
       </div>
     );
@@ -55,28 +73,25 @@ export default function BotCard({ bot, onStart, onPause, onStop, compact }) {
         </span>
       </div>
 
-      <div className="h-12 mb-4">
-        <MiniSparkline positive={profitPositive} />
-      </div>
-
       <div className="grid grid-cols-2 gap-3 mb-4 text-xs">
         <div>
-          <span className="text-muted-foreground">Capital</span>
-          <p className="font-mono font-semibold text-foreground">${bot.capital?.toLocaleString()}</p>
+          <span className="text-muted-foreground">Capital (Kraken)</span>
+          <p className="font-mono font-semibold text-foreground">${realCapital.toLocaleString('en-US', { maximumFractionDigits: 2 })}</p>
         </div>
         <div>
-          <span className="text-muted-foreground">Beneficio</span>
-          <p className={cn("font-mono font-semibold", profitPositive ? "text-profit" : "text-loss")}>
-            {profitPositive ? "+" : ""}{bot.profit?.toFixed(2)}%
-          </p>
+          <span className="text-muted-foreground">Net PnL</span>
+          {netPnl !== null
+            ? <p className={cn("font-mono font-semibold", netPnl >= 0 ? "text-profit" : "text-loss")}>{netPnl >= 0 ? "+" : ""}{netPnl.toFixed(2)} $</p>
+            : <p className="font-mono text-muted-foreground">—</p>
+          }
         </div>
         <div>
-          <span className="text-muted-foreground">Win Rate</span>
-          <p className="font-mono font-semibold text-foreground">{bot.win_rate?.toFixed(1)}%</p>
+          <span className="text-muted-foreground">Asignación</span>
+          <p className="font-mono font-semibold text-foreground">{alloc}%</p>
         </div>
         <div>
-          <span className="text-muted-foreground">Trades</span>
-          <p className="font-mono font-semibold text-foreground">{bot.trades_count}</p>
+          <span className="text-muted-foreground">Trades Kraken</span>
+          <p className="font-mono font-semibold text-foreground">{realTrades > 0 ? realTrades : "—"}</p>
         </div>
         <div>
           <span className="text-muted-foreground">Riesgo</span>
