@@ -32,7 +32,7 @@ export default function Sidebar({ open, onClose }) {
               <Activity className="w-5 h-5 text-primary" />
             </div>
             <div>
-              <h1 className="font-bold text-foreground text-lg tracking-tight">TradeCore</h1>
+              <h1 className="font-bold text-foreground text-lg tracking-tight">BotCo</h1>
               <p className="text-[10px] text-muted-foreground uppercase tracking-widest">AI Trading</p>
             </div>
           </div>
