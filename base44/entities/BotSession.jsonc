@@ -1,0 +1,41 @@
+{
+  "name": "BotSession",
+  "type": "object",
+  "properties": {
+    "active": {
+      "type": "boolean",
+      "default": false
+    },
+    "assigned_capital": {
+      "type": "number",
+      "default": 0
+    },
+    "started_at": {
+      "type": "string"
+    },
+    "pairs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [
+        "XBTUSD",
+        "ETHUSD",
+        "SOLUSD",
+        "XRPUSD"
+      ]
+    },
+    "total_pnl": {
+      "type": "number",
+      "default": 0
+    },
+    "total_trades": {
+      "type": "number",
+      "default": 0
+    }
+  },
+  "required": [
+    "active",
+    "assigned_capital"
+  ]
+}

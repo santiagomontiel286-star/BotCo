@@ -256,15 +256,15 @@ export default function BotActivationPanel() {
     return () => clearInterval(t);
   }, [active]);
 
-  const handleActivate = (amount) => {
-    activate(amount);
+  const handleActivate = async (amount) => {
+    await activate(amount);
     setPnl(0);
     setTrades(0);
     setModalOpen(false);
   };
-  const handleStop = (elapsedSeconds) => {
+  const handleStop = async (elapsedSeconds) => {
     setReportData({ capital: assignedCapital, pnl, trades, elapsedSeconds: elapsedSeconds || 0, startedAt: sessionStart });
-    deactivate();
+    await deactivate();
   };
 
   return (
