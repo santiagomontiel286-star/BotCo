@@ -21,6 +21,7 @@ import History from './pages/History';
 import WalletPage from './pages/Wallet';
 import SettingsPage from './pages/Settings';
 import Alerts from './pages/Alerts';
+import ScrollToTop from './components/ScrollToTop';
 
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError, navigateToLogin } = useAuth();
@@ -77,7 +78,6 @@ function App() {
     <AuthProvider>
       <QueryClientProvider client={queryClientInstance}>
         <Router>
-
           <AuthenticatedApp />
         </Router>
         <Toaster />
