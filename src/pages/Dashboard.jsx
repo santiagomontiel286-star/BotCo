@@ -20,9 +20,14 @@ export default function Dashboard() {
 
   const fetchKrakenBalance = async () => {
     setLoadingKraken(true);
-    const res = await base44.functions.invoke('krakenAccount', {});
-    if (res.data?.balance) setKrakenBalance(res.data.balance);
-    setLoadingKraken(false);
+    try {
+      const res = await base44.functions.invoke('krakenAccount', {});
+      if (res.data?.balance) setKrakenBalance(res.data.balance);
+    } catch {
+      setKrakenBalance(null);
+    } finally {
+      setLoadingKraken(false);
+    }
   };
 
   useEffect(() => { fetchKrakenBalance(); }, []);
