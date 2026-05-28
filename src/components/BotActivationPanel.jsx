@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { base44 } from "@/api/base44Client";
 import useBotSession from "../hooks/useBotSession";
 import useKrakenData from "../hooks/useKrakenData";
 import { Button } from "@/components/ui/button";
@@ -164,7 +165,7 @@ function ActivationModal({ krakenBalance, portfolio, onActivate, onClose }) {
 }
 
 // Panel activo
-function ActivePanel({ capital, pnl, trades, onStop }) {
+function ActivePanel({ capital, pnl, trades, onStop, totalUSD }) {
   const [elapsed, setElapsed] = useState(0);
   const [stopping, setStopping] = useState(false);
 
@@ -180,6 +181,7 @@ function ActivePanel({ capital, pnl, trades, onStop }) {
   const handleStop = () => { setStopping(true); setTimeout(() => onStop(elapsed), 2500); };
   const pnlPct = capital > 0 ? (pnl / capital) * 100 : 0;
   const isPositive = pnl >= 0;
+  const currentBalance = totalUSD > 0 ? totalUSD : null;
 
   return (
     <div className="bg-card border border-primary/30 rounded-2xl p-5 glow-green">
@@ -197,10 +199,13 @@ function ActivePanel({ capital, pnl, trades, onStop }) {
           <p className="text-lg font-mono font-bold text-foreground">{fmt(capital)}</p>
         </div>
         <div className={cn("rounded-xl p-3 border", isPositive ? "bg-primary/10 border-primary/20" : "bg-destructive/10 border-destructive/20")}>
-          <p className={cn("text-[10px] mb-1", isPositive ? "text-primary" : "text-destructive")}>P&amp;L sesión</p>
+          <p className={cn("text-[10px] mb-1", isPositive ? "text-primary" : "text-destructive")}>P&amp;L real sesión</p>
           <p className={cn("text-lg font-mono font-bold", isPositive ? "text-primary" : "text-destructive")}>
             {fmt(pnl)} <span className="text-xs">({fmtPct(pnlPct)})</span>
           </p>
+          {currentBalance !== null && (
+            <p className="text-[10px] text-muted-foreground mt-0.5">Balance actual: {fmt(currentBalance)}</p>
+          )}
         </div>
         <div className="bg-muted/50 rounded-xl p-3 border border-border/50">
           <p className="text-[10px] text-muted-foreground mb-1">Operaciones hoy</p>
@@ -239,26 +244,30 @@ function ActivePanel({ capital, pnl, trades, onStop }) {
 // Principal
 export default function BotActivationPanel() {
   const { portfolio, totalUSD, balance: krakenBalances, loading: loadingBalance, error: balanceError, refresh: fetchBalance } = useKrakenData({ intervalMs: 30000 });
-  const { active, assignedCapital, activate, deactivate } = useBotSession();
+  const { active, assignedCapital, initialBalance, activate, deactivate } = useBotSession();
   const [modalOpen, setModalOpen] = useState(false);
   const [reportData, setReportData] = useState(null);
   const [sessionStart] = useState(new Date().toISOString());
-  const [pnl, setPnl] = useState(0);
   const [trades, setTrades] = useState(0);
   const krakenBalance = totalUSD;
 
+  // Real PnL = current Kraken balance minus balance at session start
+  const pnl = active && initialBalance > 0 ? parseFloat((totalUSD - initialBalance).toFixed(2)) : 0;
+
+  // Poll BotSession for real trade count
   useEffect(() => {
     if (!active) return;
-    const t = setInterval(() => {
-      setPnl(p => parseFloat((p + (Math.random() * 0.8 - 0.2)).toFixed(2)));
-      setTrades(t => t + (Math.random() > 0.85 ? 1 : 0));
-    }, 4000);
+    const fetchTrades = async () => {
+      const sessions = await base44.entities.BotSession.filter({ active: true });
+      if (sessions?.[0]) setTrades(sessions[0].total_trades || 0);
+    };
+    fetchTrades();
+    const t = setInterval(fetchTrades, 30000);
     return () => clearInterval(t);
   }, [active]);
 
   const handleActivate = async (amount) => {
-    await activate(amount);
-    setPnl(0);
+    await activate(amount, totalUSD);
     setTrades(0);
     setModalOpen(false);
   };
@@ -270,7 +279,7 @@ export default function BotActivationPanel() {
   return (
     <div className="space-y-4">
       {active ? (
-        <ActivePanel capital={assignedCapital} pnl={pnl} trades={trades} onStop={handleStop} />
+        <ActivePanel capital={assignedCapital} pnl={pnl} trades={trades} onStop={handleStop} totalUSD={totalUSD} />
       ) : (
         <div className="bg-card border border-border rounded-2xl p-5 gap-4">
           <div className="flex items-start justify-between flex-wrap gap-3 mb-3">

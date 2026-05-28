@@ -18,12 +18,14 @@ export default function useBotSession() {
   const saved = load();
   const [active, setActive] = useState(saved?.active || false);
   const [assignedCapital, setAssignedCapital] = useState(saved?.assignedCapital || 0);
+  const [initialBalance, setInitialBalance] = useState(saved?.initialBalance || 0);
 
-  const activate = async (amount) => {
-    const session = { active: true, assignedCapital: amount, startedAt: Date.now() };
+  const activate = async (amount, krakenBalance = 0) => {
+    const session = { active: true, assignedCapital: amount, startedAt: Date.now(), initialBalance: krakenBalance };
     sessionStorage.setItem(KEY, JSON.stringify(session));
     setActive(true);
     setAssignedCapital(amount);
+    setInitialBalance(krakenBalance);
     // Create backend session so the engine can trade
     try {
       // Clear any stale sessions first
@@ -54,5 +56,5 @@ export default function useBotSession() {
     }
   };
 
-  return { active, assignedCapital, activate, deactivate };
+  return { active, assignedCapital, initialBalance, activate, deactivate };
 }
