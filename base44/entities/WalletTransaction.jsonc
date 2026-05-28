@@ -1,0 +1,39 @@
+{
+  "name": "WalletTransaction",
+  "type": "object",
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": [
+        "deposit",
+        "withdrawal",
+        "transfer"
+      ]
+    },
+    "amount": {
+      "type": "number"
+    },
+    "from_bot": {
+      "type": "string"
+    },
+    "to_bot": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "pending",
+        "failed"
+      ],
+      "default": "completed"
+    }
+  },
+  "required": [
+    "type",
+    "amount"
+  ]
+}

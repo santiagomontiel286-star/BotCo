@@ -1,0 +1,63 @@
+{
+  "name": "Trade",
+  "type": "object",
+  "properties": {
+    "bot_name": {
+      "type": "string"
+    },
+    "pair": {
+      "type": "string"
+    },
+    "side": {
+      "type": "string",
+      "enum": [
+        "buy",
+        "sell"
+      ]
+    },
+    "entry_price": {
+      "type": "number"
+    },
+    "exit_price": {
+      "type": "number"
+    },
+    "amount": {
+      "type": "number"
+    },
+    "profit_loss": {
+      "type": "number"
+    },
+    "profit_loss_percent": {
+      "type": "number"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "open",
+        "closed",
+        "cancelled"
+      ]
+    },
+    "stop_loss": {
+      "type": "number"
+    },
+    "take_profit": {
+      "type": "number"
+    },
+    "entry_date": {
+      "type": "string"
+    },
+    "exit_date": {
+      "type": "string"
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "bot_name",
+    "pair",
+    "side",
+    "status"
+  ]
+}

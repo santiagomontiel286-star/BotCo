@@ -1,0 +1,91 @@
+{
+  "name": "Bot",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "trend_following",
+        "mean_reversion",
+        "ai_sentiment",
+        "risk_guardian"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "paused",
+        "stopped"
+      ],
+      "default": "stopped"
+    },
+    "capital": {
+      "type": "number",
+      "default": 0
+    },
+    "profit": {
+      "type": "number",
+      "default": 0
+    },
+    "risk_level": {
+      "type": "number",
+      "default": 0
+    },
+    "trades_count": {
+      "type": "number",
+      "default": 0
+    },
+    "win_rate": {
+      "type": "number",
+      "default": 0
+    },
+    "max_drawdown": {
+      "type": "number",
+      "default": 0
+    },
+    "description": {
+      "type": "string"
+    },
+    "pairs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "stop_loss": {
+      "type": "number",
+      "default": 2
+    },
+    "take_profit": {
+      "type": "number",
+      "default": 3
+    },
+    "trailing_stop": {
+      "type": "number",
+      "default": 1
+    },
+    "max_risk_per_trade": {
+      "type": "number",
+      "default": 0.5
+    },
+    "daily_loss_limit": {
+      "type": "number",
+      "default": 3
+    },
+    "consecutive_loss_pause": {
+      "type": "number",
+      "default": 3
+    },
+    "icon_color": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "type"
+  ]
+}
