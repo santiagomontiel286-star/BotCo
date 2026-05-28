@@ -17,19 +17,6 @@ function nextNonce() {
   return n.toString();
 }
 
-async function krakenPrivate(path, params = {}) {
-  const apiKey = Deno.env.get('KRAKEN_API_KEY');
-  const apiSecret = Deno.env.get('KRAKEN_API_SECRET');
-  const nonce = nextNonce();
-  const postData = `nonce=${nonce}` + Object.entries(params).map(([k, v]) => `&${k}=${v}`).join('');
-  const sign = await signKraken(path, postData, apiSecret);
-  const res = await fetch(`https://api.kraken.com${path}`, {
-    method: 'POST',
-    headers: { 'API-Key': apiKey, 'API-Sign': sign, 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: postData,
-  });
-  return res.json();
-}
 
 async function krakenPublic(path) {
   const res = await fetch(`https://api.kraken.com${path}`);
@@ -55,6 +42,34 @@ Deno.serve(async (req) => {
   const base44 = createClientFromRequest(req);
   const user = await base44.auth.me();
   if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 });
+
+  // Use keys from request payload if provided, else fall back to env vars
+  let bodyApiKey, bodyApiSecret;
+  try {
+    const body = await req.json();
+    bodyApiKey = body?.apiKey;
+    bodyApiSecret = body?.apiSecret;
+  } catch {}
+
+  const KRAKEN_KEY = bodyApiKey || Deno.env.get('KRAKEN_API_KEY');
+  const KRAKEN_SECRET = bodyApiSecret || Deno.env.get('KRAKEN_API_SECRET');
+
+  if (!KRAKEN_KEY || !KRAKEN_SECRET) {
+    return Response.json({ error: 'API keys no configuradas. Ve a Ajustes e introduce tus credenciales de Kraken.' }, { status: 400 });
+  }
+
+  // Override the private caller to use resolved keys
+  const krakenPrivate = async (path, params = {}) => {
+    const nonce = nextNonce();
+    const postData = `nonce=${nonce}` + Object.entries(params).map(([k, v]) => `&${k}=${v}`).join('');
+    const sign = await signKraken(path, postData, KRAKEN_SECRET);
+    const res = await fetch(`https://api.kraken.com${path}`, {
+      method: 'POST',
+      headers: { 'API-Key': KRAKEN_KEY, 'API-Sign': sign, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: postData,
+    });
+    return res.json();
+  };
 
   // 1. Fetch balance
   const balanceData = await krakenPrivate('/0/private/Balance');

@@ -18,7 +18,15 @@ export default function useKrakenData({ intervalMs = 30000 } = {}) {
     if (!silent) setLoading(true);
     setError(null);
     try {
-      const res = await base44.functions.invoke('krakenAccount', {});
+      // Read user-provided keys from sessionStorage (set in Settings page)
+      let extraParams = {};
+      try {
+        const saved = JSON.parse(sessionStorage.getItem('botco_api_keys') || 'null');
+        if (saved?.krakenKey && saved?.krakenSecret) {
+          extraParams = { apiKey: saved.krakenKey, apiSecret: saved.krakenSecret };
+        }
+      } catch {}
+      const res = await base44.functions.invoke('krakenAccount', extraParams);
       if (res.data?.portfolio) {
         setData(res.data);
       } else {
