@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from "react";
 import { base44 } from "@/api/base44Client";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { TrendingUp, RotateCcw, Brain, Shield, X, AlertTriangle, Rocket, Square } from "lucide-react";
+import { TrendingUp, RotateCcw, Brain, Shield, X, AlertTriangle, Rocket, Square, RefreshCw } from "lucide-react";
+import LiveTradingChart from "./LiveTradingChart";
 
 const fmt = (n) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(n);
@@ -219,7 +220,8 @@ function ActivePanel({ capital, pnl, trades, onStop }) {
 
 // Principal
 export default function BotActivationPanel() {
-  const [krakenBalance, setKrakenBalance] = useState(0);
+  const [krakenBalances, setKrakenBalances] = useState({});
+  const [totalUSD, setTotalUSD] = useState(0);
   const [balanceError, setBalanceError] = useState(false);
   const [loadingBalance, setLoadingBalance] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -228,25 +230,28 @@ export default function BotActivationPanel() {
   const [pnl, setPnl] = useState(0);
   const [trades, setTrades] = useState(0);
 
-  useEffect(() => {
-    const fetchBalance = async () => {
+  const fetchBalance = async () => {
       setLoadingBalance(true);
       setBalanceError(false);
       try {
         const res = await base44.functions.invoke('krakenAccount', {});
         const bal = res.data?.balance;
-        if (bal) {
-          const usd = parseFloat(bal["ZUSD"] || bal["USD"] || 0);
-          setKrakenBalance(usd);
+        if (bal && Object.keys(bal).length > 0) {
+          setKrakenBalances(bal);
+          const rates = { ZUSD: 1, USD: 1, ZEUR: 1.08, EUR: 1.08, XXBT: 67000, XBT: 67000, XETH: 3500, ETH: 3500, SOL: 160, XRP: 0.5 };
+          const total = Object.entries(bal).reduce((sum, [asset, amt]) => sum + (rates[asset] || 1) * parseFloat(amt), 0);
+          setTotalUSD(parseFloat(total.toFixed(2)));
+        } else {
+          setBalanceError(true);
         }
       } catch {
         setBalanceError(true);
       } finally {
         setLoadingBalance(false);
       }
-    };
-    fetchBalance();
-  }, []);
+  };
+
+  useEffect(() => { fetchBalance(); }, []);
 
   useEffect(() => {
     if (!active) return;
@@ -266,6 +271,7 @@ export default function BotActivationPanel() {
   };
 
   const handleStop = () => { setActive(false); setAssignedCapital(0); };
+  const krakenBalance = totalUSD;
 
   return (
     <div className="space-y-4">
@@ -276,16 +282,24 @@ export default function BotActivationPanel() {
           <div>
             <h3 className="font-semibold text-foreground mb-0.5">Operación con capital real</h3>
             <p className="text-xs text-muted-foreground">
-              Balance Kraken USD:{" "}
+              Balance total (est. USD):{" "}
               {loadingBalance
                 ? <span className="animate-pulse">Cargando...</span>
                 : balanceError
-                  ? <span className="text-destructive">Error al conectar con Kraken — verifica las API keys</span>
-                  : <strong className="text-foreground">{fmt(krakenBalance)}</strong>
+                  ? <span className="text-destructive">Error al conectar — verifica las API keys en Ajustes</span>
+                  : <strong className="text-foreground">~{fmt(krakenBalance)}</strong>
               }
+              {!loadingBalance && !balanceError && Object.keys(krakenBalances).length > 0 && (
+                <span className="block text-[10px] mt-0.5">
+                  {Object.entries(krakenBalances).map(([a, v]) => `${a}: ${parseFloat(v).toFixed(4)}`).join(" · ")}
+                </span>
+              )}
             </p>
             <p className="text-[11px] text-muted-foreground mt-0.5">Los bots operarán 24/7 hasta que ordenes la parada inteligente</p>
           </div>
+          <Button onClick={fetchBalance} variant="ghost" size="icon" disabled={loadingBalance} className="shrink-0">
+            <RefreshCw className={cn("w-4 h-4", loadingBalance && "animate-spin")} />
+          </Button>
           <Button onClick={() => setModalOpen(true)} className="gap-2" disabled={loadingBalance || balanceError || krakenBalance <= 0}>
             <Rocket className="w-4 h-4" /> Activar bots
           </Button>
@@ -320,6 +334,8 @@ export default function BotActivationPanel() {
           <div className="bg-muted/50 rounded-lg p-2.5">Horario nocturno: <strong className="text-foreground">sizing 70%</strong></div>
         </div>
       </div>
+
+      <LiveTradingChart active={active} capital={assignedCapital} />
 
       {modalOpen && (
         <ActivationModal
