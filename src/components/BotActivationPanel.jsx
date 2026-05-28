@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { base44 } from "@/api/base44Client";
+import useKrakenData from "../hooks/useKrakenData";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { TrendingUp, RotateCcw, Brain, Shield, X, AlertTriangle, Rocket, Square, RefreshCw } from "lucide-react";
@@ -18,7 +18,7 @@ const BOTS = [
 ];
 
 // Modal
-function ActivationModal({ krakenBalance, onActivate, onClose }) {
+function ActivationModal({ krakenBalance, portfolio, onActivate, onClose }) {
   const [amount, setAmount] = useState("");
   const [step, setStep] = useState(1);
   const [error, setError] = useState("");
@@ -46,7 +46,7 @@ function ActivationModal({ krakenBalance, onActivate, onClose }) {
               {step === 1 ? "Activar bots" : "Confirmar activación"}
             </h3>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Balance Kraken: <span className="font-semibold text-foreground">{fmt(krakenBalance)}</span>
+              Portfolio total: <span className="font-semibold text-foreground">{fmt(krakenBalance)}</span>
             </p>
           </div>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
@@ -54,10 +54,26 @@ function ActivationModal({ krakenBalance, onActivate, onClose }) {
           </button>
         </div>
 
+        {/* Portfolio breakdown */}
+        {portfolio.length > 0 && step === 1 && (
+          <div className="bg-muted/40 rounded-xl p-3 mb-4 space-y-1.5">
+            {portfolio.map(p => (
+              <div key={p.asset} className="flex justify-between text-xs">
+                <span className="text-muted-foreground">{p.asset.replace('X','').replace('Z','')}: {p.amount.toFixed(6)}</span>
+                <span className="font-mono font-semibold text-foreground">${p.usdValue.toLocaleString('en-US', {maximumFractionDigits: 2})}
+                  <span className={cn("ml-2 text-[10px]", p.change24h >= 0 ? "text-primary" : "text-destructive")}>
+                    {p.change24h >= 0 ? "+" : ""}{p.change24h}%
+                  </span>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
         {step === 1 && (
           <>
             <div className="mb-4">
-              <label className="text-xs text-muted-foreground block mb-2">Capital para los bots</label>
+              <label className="text-xs text-muted-foreground block mb-2">Capital para los bots (en USD)</label>
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground font-bold text-lg">$</span>
                 <input
@@ -88,7 +104,7 @@ function ActivationModal({ krakenBalance, onActivate, onClose }) {
             {parsed > 0 && parsed <= krakenBalance && (
               <div className="bg-muted/50 rounded-xl p-4 mb-5 border border-border/50">
                 <p className="text-[10px] text-muted-foreground mb-3 uppercase tracking-wider">
-                  Distribución — {pctOfBalance.toFixed(1)}% de tu balance
+                  Distribución — {pctOfBalance.toFixed(1)}% de tu portfolio
                 </p>
                 {BOTS.map(b => (
                   <div key={b.id} className="flex items-center justify-between mb-2.5">
@@ -220,50 +236,13 @@ function ActivePanel({ capital, pnl, trades, onStop }) {
 
 // Principal
 export default function BotActivationPanel() {
-  const [krakenBalances, setKrakenBalances] = useState({});
-  const [totalUSD, setTotalUSD] = useState(0);
-  const [balanceError, setBalanceError] = useState(false);
-  const [loadingBalance, setLoadingBalance] = useState(true);
+  const { portfolio, totalUSD, balance: krakenBalances, loading: loadingBalance, error: balanceError, refresh: fetchBalance } = useKrakenData({ intervalMs: 30000 });
   const [modalOpen, setModalOpen] = useState(false);
   const [active, setActive] = useState(false);
   const [assignedCapital, setAssignedCapital] = useState(0);
   const [pnl, setPnl] = useState(0);
   const [trades, setTrades] = useState(0);
-
-  const fetchBalance = async () => {
-      setLoadingBalance(true);
-      setBalanceError(false);
-      try {
-        const res = await base44.functions.invoke('krakenAccount', {});
-        const bal = res.data?.balance;
-        if (bal && Object.keys(bal).length > 0) {
-          setKrakenBalances(bal);
-          const rates = { ZUSD: 1, USD: 1, ZEUR: 1.08, EUR: 1.08, XXBT: 67000, XBT: 67000, XETH: 3500, ETH: 3500, SOL: 160, XRP: 0.5 };
-          const total = Object.entries(bal).reduce((sum, [asset, amt]) => sum + (rates[asset] || 1) * parseFloat(amt), 0);
-          setTotalUSD(parseFloat(total.toFixed(2)));
-        } else {
-          setBalanceError(true);
-        }
-      } catch {
-        setBalanceError(true);
-      } finally {
-        setLoadingBalance(false);
-      }
-  };
-
-  useEffect(() => {
-    fetchBalance();
-    // Re-fetch balance every 45s to mantain connection alive
-    const interval = setInterval(fetchBalance, 45000);
-    return () => clearInterval(interval);
-  }, []);
-
-  // When bots are active, refresh more frequently (every 20s)
-  useEffect(() => {
-    if (!active) return;
-    const interval = setInterval(fetchBalance, 20000);
-    return () => clearInterval(interval);
-  }, [active]);
+  const krakenBalance = totalUSD;
 
   useEffect(() => {
     if (!active) return;
@@ -281,40 +260,57 @@ export default function BotActivationPanel() {
     setActive(true);
     setModalOpen(false);
   };
-
   const handleStop = () => { setActive(false); setAssignedCapital(0); };
-  const krakenBalance = totalUSD;
 
   return (
     <div className="space-y-4">
       {active ? (
         <ActivePanel capital={assignedCapital} pnl={pnl} trades={trades} onStop={handleStop} />
       ) : (
-        <div className="bg-card border border-border rounded-2xl p-5 flex items-center justify-between gap-4 flex-wrap">
-          <div>
-            <h3 className="font-semibold text-foreground mb-0.5">Operación con capital real</h3>
-            <p className="text-xs text-muted-foreground">
-              Balance total (est. USD):{" "}
-              {loadingBalance
-                ? <span className="animate-pulse">Cargando...</span>
-                : balanceError
-                  ? <span className="text-destructive">Error al conectar — verifica las API keys en Ajustes</span>
-                  : <strong className="text-foreground">~{fmt(krakenBalance)}</strong>
-              }
-              {!loadingBalance && !balanceError && Object.keys(krakenBalances).length > 0 && (
-                <span className="block text-[10px] mt-0.5">
-                  {Object.entries(krakenBalances).map(([a, v]) => `${a}: ${parseFloat(v).toFixed(4)}`).join(" · ")}
-                </span>
-              )}
-            </p>
-            <p className="text-[11px] text-muted-foreground mt-0.5">Los bots operarán 24/7 hasta que ordenes la parada inteligente</p>
+        <div className="bg-card border border-border rounded-2xl p-5 gap-4">
+          <div className="flex items-start justify-between flex-wrap gap-3 mb-3">
+            <div className="flex-1">
+              <h3 className="font-semibold text-foreground mb-0.5">Operación con capital real</h3>
+              <p className="text-xs text-muted-foreground">
+                Portfolio total Kraken:{" "}
+                {loadingBalance
+                  ? <span className="animate-pulse">Conectando...</span>
+                  : balanceError
+                    ? <span className="text-destructive">{balanceError}</span>
+                    : <strong className="text-foreground">${krakenBalance.toLocaleString('en-US', { maximumFractionDigits: 2 })} USD</strong>
+                }
+              </p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">Los bots operarán 24/7 hasta que ordenes la parada inteligente</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button onClick={fetchBalance} variant="ghost" size="icon" disabled={loadingBalance} className="shrink-0">
+                <RefreshCw className={cn("w-4 h-4", loadingBalance && "animate-spin")} />
+              </Button>
+              <Button onClick={() => setModalOpen(true)} className="gap-2" disabled={loadingBalance || !!balanceError || krakenBalance <= 0}>
+                <Rocket className="w-4 h-4" /> Activar bots
+              </Button>
+            </div>
           </div>
-          <Button onClick={fetchBalance} variant="ghost" size="icon" disabled={loadingBalance} className="shrink-0">
-            <RefreshCw className={cn("w-4 h-4", loadingBalance && "animate-spin")} />
-          </Button>
-          <Button onClick={() => setModalOpen(true)} className="gap-2" disabled={loadingBalance || balanceError || krakenBalance <= 0}>
-            <Rocket className="w-4 h-4" /> Activar bots
-          </Button>
+
+          {/* Portfolio detallado */}
+          {portfolio.length > 0 && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {portfolio.map(p => (
+                <div key={p.asset} className="bg-muted/40 rounded-lg p-2.5 flex justify-between items-center">
+                  <div>
+                    <span className="text-xs font-bold text-foreground">{p.asset.replace('X','').replace('Z','')}</span>
+                    <p className="text-[10px] text-muted-foreground">{p.amount.toFixed(6)}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-xs font-mono font-semibold text-foreground">${p.usdValue.toLocaleString('en-US',{maximumFractionDigits:2})}</p>
+                    <p className={cn("text-[10px] font-semibold", p.change24h >= 0 ? "text-primary" : "text-destructive")}>
+                      {p.change24h >= 0 ? "+" : ""}{p.change24h}%
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -352,6 +348,7 @@ export default function BotActivationPanel() {
       {modalOpen && (
         <ActivationModal
           krakenBalance={krakenBalance}
+          portfolio={portfolio}
           onActivate={handleActivate}
           onClose={() => setModalOpen(false)}
         />
