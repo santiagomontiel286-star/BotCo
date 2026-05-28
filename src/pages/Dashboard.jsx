@@ -1,9 +1,11 @@
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { base44 } from "@/api/base44Client";
-import { DollarSign, TrendingUp, Percent, Shield } from "lucide-react";
+import { DollarSign, TrendingUp, Percent, Shield, Wallet, RefreshCw } from "lucide-react";
 import StatCard from "../components/StatCard";
 import BotCard from "../components/BotCard";
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
+import { cn } from "@/lib/utils";
 
 const equityData = Array.from({ length: 30 }, (_, i) => ({
   day: `${i + 1}`,
@@ -13,6 +15,17 @@ const equityData = Array.from({ length: 30 }, (_, i) => ({
 export default function Dashboard() {
   const { data: bots = [] } = useQuery({ queryKey: ["bots"], queryFn: () => base44.entities.Bot.list() });
   const { data: trades = [] } = useQuery({ queryKey: ["trades"], queryFn: () => base44.entities.Trade.list("-created_date", 10) });
+  const [krakenBalance, setKrakenBalance] = useState(null);
+  const [loadingKraken, setLoadingKraken] = useState(true);
+
+  const fetchKrakenBalance = async () => {
+    setLoadingKraken(true);
+    const res = await base44.functions.invoke('krakenAccount', {});
+    if (res.data?.balance) setKrakenBalance(res.data.balance);
+    setLoadingKraken(false);
+  };
+
+  useEffect(() => { fetchKrakenBalance(); }, []);
 
   const totalCapital = bots.reduce((s, b) => s + (b.capital || 0), 0);
   const totalProfit = bots.length ? bots.reduce((s, b) => s + (b.profit || 0), 0) / bots.length : 0;
@@ -21,11 +34,56 @@ export default function Dashboard() {
   const activeBots = bots.filter(b => b.status === "active").length;
   const openTrades = trades.filter(t => t.status === "open").length;
 
+  const usdBalance = krakenBalance ? (krakenBalance["ZUSD"] || krakenBalance["USD"] || 0) : 0;
+  const btcBalance = krakenBalance ? (krakenBalance["XXBT"] || krakenBalance["XBT"] || 0) : 0;
+  const ethBalance = krakenBalance ? (krakenBalance["XETH"] || krakenBalance["ETH"] || 0) : 0;
+
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold text-foreground tracking-tight">Dashboard</h2>
-        <p className="text-sm text-muted-foreground mt-1">Centro de control — Modo Ultra Conservador</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold text-foreground tracking-tight">Dashboard</h2>
+          <p className="text-sm text-muted-foreground mt-1">Centro de control — Modo Ultra Conservador</p>
+        </div>
+        <button onClick={fetchKrakenBalance} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
+          <RefreshCw className={cn("w-3.5 h-3.5", loadingKraken && "animate-spin")} />
+          Actualizar Kraken
+        </button>
+      </div>
+
+      {/* Kraken Real Balance */}
+      <div className="bg-primary/5 border border-primary/20 rounded-xl p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Wallet className="w-4 h-4 text-primary" />
+          <span className="text-sm font-semibold text-foreground">Balance Real Kraken</span>
+          {loadingKraken && <span className="text-xs text-muted-foreground animate-pulse">Cargando...</span>}
+        </div>
+        {krakenBalance ? (
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <span className="text-[10px] text-muted-foreground">USD</span>
+              <p className="text-lg font-mono font-bold text-foreground">${usdBalance.toLocaleString('en-US', { maximumFractionDigits: 2 })}</p>
+            </div>
+            <div>
+              <span className="text-[10px] text-muted-foreground">BTC</span>
+              <p className="text-lg font-mono font-bold text-chart-3">{btcBalance.toFixed(6)}</p>
+            </div>
+            <div>
+              <span className="text-[10px] text-muted-foreground">ETH</span>
+              <p className="text-lg font-mono font-bold text-accent">{ethBalance.toFixed(4)}</p>
+            </div>
+            {Object.entries(krakenBalance)
+              .filter(([k]) => !['ZUSD','USD','XXBT','XBT','XETH','ETH'].includes(k))
+              .map(([asset, amount]) => (
+                <div key={asset}>
+                  <span className="text-[10px] text-muted-foreground">{asset}</span>
+                  <p className="text-sm font-mono font-bold text-foreground">{parseFloat(amount).toFixed(4)}</p>
+                </div>
+              ))}
+          </div>
+        ) : (
+          !loadingKraken && <p className="text-sm text-muted-foreground">No se pudo conectar con Kraken. Verifica las API keys.</p>
+        )}
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -108,7 +166,7 @@ export default function Dashboard() {
                   <td className="py-2.5"><span className={t.side === "buy" ? "text-profit" : "text-loss"}>{t.side?.toUpperCase()}</span></td>
                   <td className="py-2.5 text-right font-mono">${t.entry_price?.toLocaleString()}</td>
                   <td className={`py-2.5 text-right font-mono font-medium ${(t.profit_loss || 0) >= 0 ? "text-profit" : "text-loss"}`}>
-                    {(t.profit_loss || 0) >= 0 ? "+" : ""}{t.profit_loss?.toFixed(2)}%
+                    {(t.profit_loss || 0) >= 0 ? "+" : ""}{t.profit_loss != null ? t.profit_loss.toFixed(2) : "—"}%
                   </td>
                   <td className="py-2.5 text-right">
                     <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${t.status === "open" ? "bg-primary/20 text-primary" : t.status === "closed" ? "bg-muted text-muted-foreground" : "bg-destructive/20 text-destructive"}`}>
