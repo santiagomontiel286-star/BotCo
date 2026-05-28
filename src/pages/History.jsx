@@ -124,7 +124,7 @@ export default function History() {
                 <td className="py-2.5 text-right font-mono">${t.entry_price?.toLocaleString()}</td>
                 <td className="py-2.5 text-right font-mono">{t.exit_price ? `$${t.exit_price.toLocaleString()}` : "—"}</td>
                 <td className={cn("py-2.5 text-right font-mono font-medium", (t.profit_loss || 0) >= 0 ? "text-profit" : "text-loss")}>
-                  {t.profit_loss !== undefined ? `${t.profit_loss >= 0 ? "+" : ""}${t.profit_loss.toFixed(2)}%` : "—"}
+                  {t.profit_loss != null ? `${t.profit_loss >= 0 ? "+" : ""}${t.profit_loss.toFixed(2)}%` : "—"}
                 </td>
                 <td className="py-2.5 text-right">
                   <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${t.status === "open" ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground"}`}>{t.status}</span>
