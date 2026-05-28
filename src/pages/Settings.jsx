@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Settings as SettingsIcon, Eye, EyeOff, Save, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { toast } from "sonner";
+import { useToast } from "@/components/ui/use-toast";
 
 export default function SettingsPage() {
   const [binanceKey, setBinanceKey] = useState("");
@@ -10,9 +10,10 @@ export default function SettingsPage() {
   const [krakenKey, setKrakenKey] = useState("");
   const [krakenSecret, setKrakenSecret] = useState("");
   const [showSecrets, setShowSecrets] = useState(false);
+  const { toast } = useToast();
 
   const handleSave = () => {
-    toast.success("Configuración guardada correctamente");
+    toast({ title: "✅ Configuración guardada", description: "Los cambios han sido aplicados correctamente." });
   };
 
   return (
