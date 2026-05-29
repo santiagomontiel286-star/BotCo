@@ -16,9 +16,9 @@ const PAIR_LABELS = { XBTEUR: "BTC/EUR", ETHEUR: "ETH/EUR" };
 const MIN_VOL     = { XBTEUR: 0.0002, ETHEUR: 0.002 };
 
 const TP_PCT    = 0.025;  // 2.5% take profit
-const SL_PCT    = 0.012;  // 1.2% stop loss
+const SL_PCT    = 0.008;  // 0.8% stop loss — capital protection priority
 const MAX_HOURS = 4;      // force-close after 4 h
-const MIN_VOTES = 2;      // minimum agreements to execute (out of 4)
+const MIN_VOTES = 3;      // 3 of 4 bots must agree to execute (consensus)
 
 const BOTS = [
   { name: "Trend Follower", strategy: "trend"    },
@@ -242,7 +242,13 @@ Deno.serve(async (req) => {
       log.push({ pair: PAIR_LABELS[pair], votes });
 
       // Need MIN_VOTES agreement — only BUY (we hold EUR, no shorts on spot)
-      const consensus = buyVotes.length >= MIN_VOTES ? "buy" : null;
+      // Trend Follower is the executor; the other 3 act as analysts/approvers
+      const allApprovers = ["Mean Reversion", "AI Sentiment", "Risk Guardian"];
+      const approversBuying = allApprovers.filter(name => votes.find(v => v.bot === name && v.vote === "buy"));
+      const executorVote = votes.find(v => v.bot === "Trend Follower")?.vote;
+      const consensus = approversBuying.length >= MIN_VOTES ? "buy" : null;
+
+      log.push({ pair: PAIR_LABELS[pair], executor: executorVote, approvers: approversBuying.length + "/3", threshold: MIN_VOTES + "/3" });
 
       if (!consensus) {
         log.push({ pair: PAIR_LABELS[pair], status: "hold", buy: buyVotes.length, sell: sellVotes.length });
@@ -282,7 +288,8 @@ Deno.serve(async (req) => {
         take_profit: parseFloat((price * (1 + TP_PCT)).toFixed(4)),
         stop_loss: parseFloat((price * (1 - SL_PCT)).toFixed(4)),
         entry_date: new Date().toISOString(),
-        notes: `Consensus ${buyVotes.length}/4 | Voters: ${buyVotes.join(", ")} | Capital: €${capital.toFixed(2)} | TxID: ${txids.join(",")}`,
+        notes: `Consensus: ${approversBuying.length}/3 approvers agreed | Executor: Trend Follower | Capital: €${capital.toFixed(2)} | TxID: ${txids.join(",")}`,
+        stop_loss: parseFloat((price * (1 - SL_PCT)).toFixed(4)),
       });
 
       log.push({
