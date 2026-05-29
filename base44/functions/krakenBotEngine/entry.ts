@@ -13,9 +13,7 @@ const PAIRS = ["XBTEUR", "ETHEUR", "SOLEUR", "XRPEUR"];
 const PAIR_LABELS = { XBTEUR: "BTC/EUR", ETHEUR: "ETH/EUR", SOLEUR: "SOL/EUR", XRPEUR: "XRP/EUR" };
 const LABEL_TO_PAIR = { "BTC/EUR": "XBTEUR", "ETH/EUR": "ETHEUR", "SOL/EUR": "SOLEUR", "XRP/EUR": "XRPEUR" };
 
-const MIN_VOL = { XBTEUR: 0.0002, ETHEUR: 0.002, SOLEUR: 0.5, XRPEUR: 10 };
-// Active pairs — SOL and XRP need too much capital for small accounts
-const ACTIVE_PAIRS = ["XBTEUR", "ETHEUR"];
+const MIN_VOL = { XBTEUR: 0.0002, ETHEUR: 0.005, SOLEUR: 0.5, XRPEUR: 10 };
 
 // Risk params
 const TP_PCT = 0.025;       // 2.5% take profit
@@ -252,10 +250,15 @@ Deno.serve(async (req) => {
     const openOrders = await getOpenOrders(apiKey, apiSecret);
     const openOrderPairs = new Set(Object.values(openOrders).map(o => o.descr?.pair));
 
+    // Capital already deployed in open trades
+    const openTradesAfterClose = await base44.asServiceRole.entities.Trade.filter({ status: "open" });
+    const capitalDeployed = openTradesAfterClose.reduce((sum, t) => sum + (t.amount || 0) * (t.entry_price || 0), 0);
+    const availableCapital = Math.max(0, capital - capitalDeployed);
+
     const newTradeResults = [];
 
     // ── Step 3: Place new trades based on signals ─────────────────────────────
-    for (const pair of ACTIVE_PAIRS) {
+    for (const pair of PAIRS) {
       if (openOrderPairs.has(pair)) {
         newTradeResults.push({ pair, status: "skip", reason: "open order exists" });
         continue;
@@ -273,10 +276,12 @@ Deno.serve(async (req) => {
       for (const bot of BOTS) {
         const botCapital = (capital * bot.pct) / 100;
         const minVol = MIN_VOL[pair];
-        const rawVolume = botCapital / currentPrice;
+        // If bot's share is too small, try using all available capital (pool strategy)
+        const effectiveCapital = botCapital >= minVol * currentPrice ? botCapital : availableCapital;
+        const rawVolume = effectiveCapital / currentPrice;
 
         if (rawVolume < minVol) {
-          newTradeResults.push({ pair, bot: bot.name, status: "skip", reason: `need $${(minVol * currentPrice).toFixed(2)} min, have $${botCapital.toFixed(2)}` });
+          newTradeResults.push({ pair, bot: bot.name, status: "skip", reason: `need €${(minVol * currentPrice).toFixed(2)} min, have €${effectiveCapital.toFixed(2)}` });
           continue;
         }
 
