@@ -13,7 +13,9 @@ const PAIRS = ["XBTEUR", "ETHEUR", "SOLEUR", "XRPEUR"];
 const PAIR_LABELS = { XBTEUR: "BTC/EUR", ETHEUR: "ETH/EUR", SOLEUR: "SOL/EUR", XRPEUR: "XRP/EUR" };
 const LABEL_TO_PAIR = { "BTC/EUR": "XBTEUR", "ETH/EUR": "ETHEUR", "SOL/EUR": "SOLEUR", "XRP/EUR": "XRPEUR" };
 
-const MIN_VOL = { XBTEUR: 0.0002, ETHEUR: 0.005, SOLEUR: 0.5, XRPEUR: 10 };
+const MIN_VOL = { XBTEUR: 0.0002, ETHEUR: 0.002, SOLEUR: 0.5, XRPEUR: 10 };
+// Active pairs — SOL and XRP need too much capital for small accounts
+const ACTIVE_PAIRS = ["XBTEUR", "ETHEUR"];
 
 // Risk params
 const TP_PCT = 0.025;       // 2.5% take profit
@@ -253,7 +255,7 @@ Deno.serve(async (req) => {
     const newTradeResults = [];
 
     // ── Step 3: Place new trades based on signals ─────────────────────────────
-    for (const pair of PAIRS) {
+    for (const pair of ACTIVE_PAIRS) {
       if (openOrderPairs.has(pair)) {
         newTradeResults.push({ pair, status: "skip", reason: "open order exists" });
         continue;
