@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { base44 } from "@/api/base44Client";
 import { Button } from "@/components/ui/button";
 import { X, TrendingUp, TrendingDown, Clock, DollarSign, Target, BarChart2, CheckCircle, Archive } from "lucide-react";
@@ -25,17 +25,33 @@ export default function SessionReportModal({ sessionData, onClose }) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
-  const { capital, pnl, trades, elapsedSeconds, startedAt } = sessionData;
-  const pnlPct = capital > 0 ? (pnl / capital) * 100 : 0;
-  const isPositive = pnl >= 0;
+  const { capital, pnl, elapsedSeconds, startedAt } = sessionData;
+  const [realTrades, setRealTrades] = useState([]);
 
-  // Simulate per-bot breakdown (proportional)
-  const botBreakdown = BOTS.map(b => ({
-    ...b,
-    capital: (capital * b.pct) / 100,
-    pnl: (pnl * b.pct) / 100,
-    trades: Math.round(trades * b.pct / 100),
-  }));
+  // Fetch real trades from the session period
+  useEffect(() => {
+    base44.entities.Trade.filter({}).then(all => {
+      const sessionStart = startedAt ? new Date(startedAt).getTime() : Date.now() - elapsedSeconds * 1000;
+      const sessionTrades = all.filter(t => new Date(t.entry_date || t.created_date).getTime() >= sessionStart - 60000);
+      setRealTrades(sessionTrades);
+    }).catch(() => {});
+  }, []);
+
+  const realPnl = realTrades.filter(t => t.status === "closed" && t.profit_loss != null).reduce((s, t) => s + t.profit_loss, 0);
+  const hasRealTrades = realTrades.length > 0;
+  
+  // Use real P&L from trades if available, otherwise show balance change
+  const displayPnl = hasRealTrades ? realPnl : pnl;
+  const pnlPct = capital > 0 ? (displayPnl / capital) * 100 : 0;
+  const isPositive = displayPnl >= 0;
+  const realTradeCount = realTrades.length;
+
+  // Real bot breakdown from actual trades
+  const botBreakdown = BOTS.map(b => {
+    const botTrades = realTrades.filter(t => t.bot_name === b.name);
+    const botPnl = botTrades.filter(t => t.status === "closed").reduce((s, t) => s + (t.profit_loss || 0), 0);
+    return { ...b, capital: (capital * b.pct) / 100, pnl: botPnl, trades: botTrades.length };
+  });
 
   const botBreakdownStr = JSON.stringify(botBreakdown);
 
@@ -46,9 +62,9 @@ export default function SessionReportModal({ sessionData, onClose }) {
       ended_at: new Date().toISOString(),
       duration_seconds: elapsedSeconds,
       assigned_capital: capital,
-      pnl: parseFloat(pnl.toFixed(4)),
+      pnl: parseFloat(displayPnl.toFixed(4)),
       pnl_pct: parseFloat(pnlPct.toFixed(4)),
-      trades_count: trades,
+      trades_count: realTradeCount,
       bot_breakdown: botBreakdownStr,
     });
     setSaving(false);
@@ -76,11 +92,14 @@ export default function SessionReportModal({ sessionData, onClose }) {
             <div>
               <p className="text-xs text-muted-foreground mb-1">P&amp;L Total de la sesión</p>
               <p className={cn("text-3xl font-mono font-bold", isPositive ? "text-primary" : "text-destructive")}>
-                {isPositive ? "+" : ""}{fmt(pnl)}
+                {isPositive ? "+" : ""}{fmt(displayPnl)}
               </p>
               <p className={cn("text-sm font-semibold mt-0.5", isPositive ? "text-primary" : "text-destructive")}>
                 {fmtPct(pnlPct)} sobre capital asignado
               </p>
+              {!hasRealTrades && (
+                <p className="text-[10px] text-chart-3 mt-1">⚠ Variación de precio — sin trades ejecutados</p>
+              )}
             </div>
             {isPositive ? <TrendingUp className="w-10 h-10 text-primary/30" /> : <TrendingDown className="w-10 h-10 text-destructive/30" />}
           </div>
@@ -106,14 +125,14 @@ export default function SessionReportModal({ sessionData, onClose }) {
                 <BarChart2 className="w-3.5 h-3.5 text-muted-foreground" />
                 <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Operaciones</span>
               </div>
-              <p className="text-sm font-mono font-bold text-foreground">{trades}</p>
+              <p className="text-sm font-mono font-bold text-foreground">{realTradeCount}</p>
             </div>
             <div className="bg-muted/30 rounded-xl p-3 border border-border/50">
               <div className="flex items-center gap-1.5 mb-1">
                 <Target className="w-3.5 h-3.5 text-muted-foreground" />
                 <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Capital final est.</span>
               </div>
-              <p className={cn("text-sm font-mono font-bold", isPositive ? "text-primary" : "text-destructive")}>{fmt(capital + pnl)}</p>
+              <p className={cn("text-sm font-mono font-bold", isPositive ? "text-primary" : "text-destructive")}>{fmt(capital + displayPnl)}</p>
             </div>
           </div>
 
