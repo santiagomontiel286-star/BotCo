@@ -1,8 +1,8 @@
 /**
  * BotCo Real Trading Engine
  * - Runs every 5 minutes via automation
- * - Checks active BotSession
- * - Computes signals (EMA crossover, RSI, momentum)
+ * - Closes open trades that hit TP/SL or are older than MAX_TRADE_HOURS
+ * - Computes signals (EMA crossover, RSI, momentum, breakout)
  * - Places real market orders on Kraken
  * - Records trades to Trade entity
  */
@@ -11,11 +11,15 @@ import { createClientFromRequest } from 'npm:@base44/sdk@0.8.25';
 const KRAKEN_API = "https://api.kraken.com";
 const PAIRS = ["XBTEUR", "ETHEUR", "SOLEUR", "XRPEUR"];
 const PAIR_LABELS = { XBTEUR: "BTC/EUR", ETHEUR: "ETH/EUR", SOLEUR: "SOL/EUR", XRPEUR: "XRP/EUR" };
+const LABEL_TO_PAIR = { "BTC/EUR": "XBTEUR", "ETH/EUR": "ETHEUR", "SOL/EUR": "SOLEUR", "XRP/EUR": "XRPEUR" };
 
-// Min order volumes for each pair (Kraken limits)
 const MIN_VOL = { XBTEUR: 0.0002, ETHEUR: 0.005, SOLEUR: 0.5, XRPEUR: 10 };
 
-// Bot allocations
+// Risk params
+const TP_PCT = 0.025;       // 2.5% take profit
+const SL_PCT = 0.012;       // 1.2% stop loss
+const MAX_TRADE_HOURS = 3;  // force-close after 3 hours
+
 const BOTS = [
   { id: "trend",  name: "Trend Follower",  pct: 35, strategy: "trend" },
   { id: "mean",   name: "Mean Reversion",  pct: 25, strategy: "rsi" },
@@ -23,14 +27,12 @@ const BOTS = [
   { id: "risk",   name: "Risk Guardian",   pct: 15, strategy: "breakout" },
 ];
 
-// ── Nonce counter (strictly increasing within one execution) ─────────────────
 let _nonceBase = Date.now() * 1000;
 let _nonceSeq = 0;
 function nextNonce() {
   return (_nonceBase + _nonceSeq++).toString();
 }
 
-// ── Kraken signing ────────────────────────────────────────────────────────────
 async function krakenSign(path, nonce, postData, apiSecret) {
   const enc = new TextEncoder();
   const msgHash = await crypto.subtle.digest("SHA-256", enc.encode(nonce + postData));
@@ -63,14 +65,6 @@ async function krakenPublic(endpoint, params = {}) {
   return res.json();
 }
 
-// ── Technical Indicators ──────────────────────────────────────────────────────
-function calcEMA(prices, period) {
-  const k = 2 / (period + 1);
-  let ema = prices[0];
-  for (let i = 1; i < prices.length; i++) ema = prices[i] * k + ema * (1 - k);
-  return ema;
-}
-
 function calcEMASeries(prices, period) {
   const k = 2 / (period + 1);
   let ema = prices[0];
@@ -97,35 +91,28 @@ function calcRSI(closes, period = 14) {
     avgLoss = (avgLoss * (period - 1) + Math.max(0, -diff)) / period;
   }
   if (avgLoss === 0) return 100;
-  const rs = avgGain / avgLoss;
-  return 100 - 100 / (1 + rs);
+  return 100 - 100 / (1 + avgGain / avgLoss);
 }
 
-// ── Signal Logic ──────────────────────────────────────────────────────────────
 function getSignal(strategy, closes) {
   const n = closes.length;
   if (n < 22) return "hold";
 
   if (strategy === "trend") {
-    // EMA9 / EMA21 crossover
     const ema9 = calcEMASeries(closes, 9);
     const ema21 = calcEMASeries(closes, 21);
-    const last = n - 1;
-    const prev = n - 2;
+    const last = n - 1, prev = n - 2;
     if (ema9[prev] < ema21[prev] && ema9[last] > ema21[last]) return "buy";
     if (ema9[prev] > ema21[prev] && ema9[last] < ema21[last]) return "sell";
     return "hold";
   }
-
   if (strategy === "rsi") {
     const rsi = calcRSI(closes, 14);
     if (rsi < 32) return "buy";
     if (rsi > 68) return "sell";
     return "hold";
   }
-
   if (strategy === "momentum") {
-    // Last 3 candles all bullish or all bearish
     const last3 = closes.slice(-4);
     const bull = last3[1] > last3[0] && last3[2] > last3[1] && last3[3] > last3[2];
     const bear = last3[1] < last3[0] && last3[2] < last3[1] && last3[3] < last3[2];
@@ -133,9 +120,7 @@ function getSignal(strategy, closes) {
     if (bear) return "sell";
     return "hold";
   }
-
   if (strategy === "breakout") {
-    // Price breaks 20-period high/low
     const last = closes[n - 1];
     const window = closes.slice(-21, -1);
     const high20 = Math.max(...window);
@@ -144,19 +129,15 @@ function getSignal(strategy, closes) {
     if (last < low20) return "sell";
     return "hold";
   }
-
   return "hold";
 }
 
-// ── Kraken pair name mapping ──────────────────────────────────────────────────
-const OHLC_PAIR = { XBTEUR: "XBTEUR", ETHEUR: "ETHEUR", SOLEUR: "SOLEUR", XRPEUR: "XRPEUR" };
-
 async function getCloses(pair) {
-  const data = await krakenPublic("OHLC", { pair: OHLC_PAIR[pair], interval: 5 });
+  const data = await krakenPublic("OHLC", { pair, interval: 5 });
   if (data.error?.length) return null;
   const key = Object.keys(data.result).find(k => k !== "last");
   if (!key) return null;
-  return data.result[key].map(c => parseFloat(c[4])); // close price
+  return data.result[key].map(c => parseFloat(c[4]));
 }
 
 async function getLastPrice(pair) {
@@ -166,44 +147,32 @@ async function getLastPrice(pair) {
   return parseFloat(data.result[key].c[0]);
 }
 
-// ── Open positions check ──────────────────────────────────────────────────────
-async function getOpenPositions(apiKey, apiSecret) {
-  const data = await krakenPrivate("OpenPositions", {}, apiKey, apiSecret);
-  if (data.error?.length) return {};
-  return data.result || {};
-}
-
 async function getOpenOrders(apiKey, apiSecret) {
   const data = await krakenPrivate("OpenOrders", {}, apiKey, apiSecret);
   if (data.error?.length) return {};
   return data.result?.open || {};
 }
 
-// ── Place order ───────────────────────────────────────────────────────────────
 async function placeOrder(pair, side, volume, apiKey, apiSecret) {
   const params = {
     pair,
-    type: side,       // "buy" or "sell"
+    type: side,
     ordertype: "market",
     volume: volume.toString(),
   };
-  const data = await krakenPrivate("AddOrder", params, apiKey, apiSecret);
-  return data;
+  return krakenPrivate("AddOrder", params, apiKey, apiSecret);
 }
 
-// ── Main engine ───────────────────────────────────────────────────────────────
 Deno.serve(async (req) => {
   try {
     const base44 = createClientFromRequest(req);
 
-    // Allow automation (no user) OR admin user
     let isAdmin = false;
     try {
       const user = await base44.auth.me();
       isAdmin = user?.role === "admin";
     } catch {
-      // Called from automation — proceed
-      isAdmin = true;
+      isAdmin = true; // automation call
     }
     if (!isAdmin) return Response.json({ error: "Forbidden" }, { status: 403 });
 
@@ -211,7 +180,6 @@ Deno.serve(async (req) => {
     const apiSecret = Deno.env.get("KRAKEN_API_SECRET");
     if (!apiKey || !apiSecret) return Response.json({ error: "Kraken API keys not configured" }, { status: 500 });
 
-    // Check active session
     const sessions = await base44.asServiceRole.entities.BotSession.filter({ active: true });
     if (!sessions || sessions.length === 0) {
       return Response.json({ status: "idle", message: "No active bot session" });
@@ -220,92 +188,147 @@ Deno.serve(async (req) => {
     const capital = session.assigned_capital || 0;
     if (capital < 10) return Response.json({ status: "skip", message: "Capital too low" });
 
-    const results = [];
+    const closedResults = [];
     let sessionPnlDelta = 0;
     let sessionTradesDelta = 0;
 
-    // Get open orders to avoid spam
-    const openOrders = await getOpenOrders(apiKey, apiSecret);
-    const openPairs = new Set(Object.values(openOrders).map(o => o.descr?.pair));
-
-    // Get open trades per bot to avoid double-buying
+    // ── Step 1: Close open trades that hit TP/SL or are stale ────────────────
     const openTrades = await base44.asServiceRole.entities.Trade.filter({ status: "open" });
     const openBotPairs = new Set(openTrades.map(t => `${t.bot_name}::${t.pair}`));
 
+    for (const trade of openTrades) {
+      const krakenPair = LABEL_TO_PAIR[trade.pair];
+      if (!krakenPair) {
+        // Unknown pair — mark closed to unblock
+        await base44.asServiceRole.entities.Trade.update(trade.id, { status: "closed", exit_date: new Date().toISOString() });
+        openBotPairs.delete(`${trade.bot_name}::${trade.pair}`);
+        continue;
+      }
+
+      const currentPrice = await getLastPrice(krakenPair);
+      if (!currentPrice) continue;
+
+      const ageHours = (Date.now() - new Date(trade.entry_date).getTime()) / 3600000;
+      const isLong = trade.side === "buy";
+      const pricePct = (currentPrice - trade.entry_price) / trade.entry_price;
+
+      const hitTP = isLong ? pricePct >= TP_PCT : pricePct <= -TP_PCT;
+      const hitSL = isLong ? pricePct <= -SL_PCT : pricePct >= SL_PCT;
+      const isStale = ageHours >= MAX_TRADE_HOURS;
+
+      if (hitTP || hitSL || isStale) {
+        const reason = hitTP ? "take_profit" : hitSL ? "stop_loss" : "timeout";
+        const closeType = isLong ? "sell" : "buy";
+        const minVol = MIN_VOL[krakenPair] || 0;
+        
+        let closedOnKraken = false;
+        if (trade.amount >= minVol) {
+          const closeResult = await placeOrder(krakenPair, closeType, trade.amount, apiKey, apiSecret);
+          closedOnKraken = !closeResult.error?.length;
+        }
+
+        const pnl = isLong
+          ? (currentPrice - trade.entry_price) * trade.amount
+          : (trade.entry_price - currentPrice) * trade.amount;
+
+        await base44.asServiceRole.entities.Trade.update(trade.id, {
+          status: "closed",
+          exit_price: currentPrice,
+          exit_date: new Date().toISOString(),
+          profit_loss: parseFloat(pnl.toFixed(4)),
+          profit_loss_percent: parseFloat((pricePct * 100 * (isLong ? 1 : -1)).toFixed(2)),
+          notes: (trade.notes || "") + ` | Closed: ${reason}${closedOnKraken ? " (Kraken order placed)" : ""}`,
+        });
+
+        openBotPairs.delete(`${trade.bot_name}::${trade.pair}`);
+        sessionPnlDelta += pnl;
+        closedResults.push({ trade_id: trade.id, reason, pnl: pnl.toFixed(4) });
+      }
+    }
+
+    // ── Step 2: Get open orders to avoid spam ────────────────────────────────
+    const openOrders = await getOpenOrders(apiKey, apiSecret);
+    const openOrderPairs = new Set(Object.values(openOrders).map(o => o.descr?.pair));
+
+    const newTradeResults = [];
+
+    // ── Step 3: Place new trades based on signals ─────────────────────────────
     for (const pair of PAIRS) {
+      if (openOrderPairs.has(pair)) {
+        newTradeResults.push({ pair, status: "skip", reason: "open order exists" });
+        continue;
+      }
+
       const closes = await getCloses(pair);
       if (!closes || closes.length < 25) {
-        results.push({ pair, status: "skip", reason: "insufficient data" });
+        newTradeResults.push({ pair, status: "skip", reason: "insufficient data" });
         continue;
       }
 
       const currentPrice = closes[closes.length - 1];
       if (!currentPrice) continue;
 
-      // Skip if already have open order for this pair
-      if (openPairs.has(pair)) {
-        results.push({ pair, status: "skip", reason: "open order exists" });
-        continue;
-      }
-
       for (const bot of BOTS) {
         const botCapital = (capital * bot.pct) / 100;
-        // Use full bot capital per trade (one active trade per bot at a time)
-        const tradeCapital = botCapital;
         const minVol = MIN_VOL[pair];
-        const rawVolume = tradeCapital / currentPrice;
+        const rawVolume = botCapital / currentPrice;
 
         if (rawVolume < minVol) {
-          results.push({ pair, bot: bot.name, status: "skip", reason: `need $${(minVol * currentPrice).toFixed(2)} min, have $${tradeCapital.toFixed(2)}` });
+          newTradeResults.push({ pair, bot: bot.name, status: "skip", reason: `need $${(minVol * currentPrice).toFixed(2)} min, have $${botCapital.toFixed(2)}` });
           continue;
         }
 
-        // Round to 6 decimal places for the order
         const volume = Math.floor(rawVolume * 1e6) / 1e6;
+        const botPairKey = `${bot.name}::${PAIR_LABELS[pair]}`;
 
-        // Skip if this bot already has an open trade on this pair
-        const botPairKey = `${bot.name}::${PAIR_LABELS[pair] || pair}`;
         if (openBotPairs.has(botPairKey)) {
-          results.push({ pair, bot: bot.name, status: "skip", reason: "open trade exists" });
+          newTradeResults.push({ pair, bot: bot.name, status: "skip", reason: "open trade exists" });
           continue;
         }
 
         const signal = getSignal(bot.strategy, closes);
         if (signal === "hold") {
-          results.push({ pair, bot: bot.name, status: "hold" });
+          newTradeResults.push({ pair, bot: bot.name, status: "hold" });
           continue;
         }
 
-        // Place real order
         const orderResult = await placeOrder(pair, signal, volume, apiKey, apiSecret);
         const txids = orderResult.result?.txid || [];
         const hasError = orderResult.error?.length > 0;
 
         if (!hasError && txids.length > 0) {
           sessionTradesDelta++;
-          // Record to Trade entity
+          const isLong = signal === "buy";
+          const tpPrice = isLong ? currentPrice * (1 + TP_PCT) : currentPrice * (1 - TP_PCT);
+          const slPrice = isLong ? currentPrice * (1 - SL_PCT) : currentPrice * (1 + SL_PCT);
+
           await base44.asServiceRole.entities.Trade.create({
             bot_name: bot.name,
-            pair: PAIR_LABELS[pair] || pair,
+            pair: PAIR_LABELS[pair],
             side: signal,
             entry_price: currentPrice,
             amount: volume,
             status: "open",
+            take_profit: parseFloat(tpPrice.toFixed(2)),
+            stop_loss: parseFloat(slPrice.toFixed(2)),
             entry_date: new Date().toISOString(),
             notes: `Strategy: ${bot.strategy} | TxID: ${txids.join(",")}`,
           });
-          results.push({ pair, bot: bot.name, signal, volume, txid: txids[0], status: "executed" });
+
+          openBotPairs.add(botPairKey);
+          newTradeResults.push({ pair, bot: bot.name, signal, volume, txid: txids[0], status: "executed" });
         } else {
-          results.push({ pair, bot: bot.name, signal, status: "error", error: orderResult.error?.[0] || "unknown" });
+          newTradeResults.push({ pair, bot: bot.name, signal, status: "error", error: orderResult.error?.[0] || "unknown" });
         }
       }
     }
 
-    // Update session stats
-    if (sessionTradesDelta > 0) {
-      await base44.asServiceRole.entities.BotSession.update(session.id, {
-        total_trades: (session.total_trades || 0) + sessionTradesDelta,
-      });
+    // ── Step 4: Update session stats ──────────────────────────────────────────
+    const updates = {};
+    if (sessionTradesDelta > 0) updates.total_trades = (session.total_trades || 0) + sessionTradesDelta;
+    if (sessionPnlDelta !== 0) updates.total_pnl = parseFloat(((session.total_pnl || 0) + sessionPnlDelta).toFixed(4));
+    if (Object.keys(updates).length > 0) {
+      await base44.asServiceRole.entities.BotSession.update(session.id, updates);
     }
 
     return Response.json({
@@ -313,7 +336,8 @@ Deno.serve(async (req) => {
       timestamp: new Date().toISOString(),
       session_id: session.id,
       capital,
-      results,
+      closed_trades: closedResults,
+      new_trades: newTradeResults,
       trades_executed: sessionTradesDelta,
     });
   } catch (error) {

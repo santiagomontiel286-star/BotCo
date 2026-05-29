@@ -1,7 +1,8 @@
 /**
- * Persists bot activation state — sessionStorage (UI) + BotSession entity (backend engine).
+ * Persists bot activation state — DB (BotSession entity) + sessionStorage fallback.
+ * Hydrates from DB on mount so the session survives browser close.
  */
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { base44 } from "@/api/base44Client";
 
 const KEY = "botco_bot_session";
@@ -19,6 +20,24 @@ export default function useBotSession() {
   const [active, setActive] = useState(saved?.active || false);
   const [assignedCapital, setAssignedCapital] = useState(saved?.assignedCapital || 0);
   const [initialBalance, setInitialBalance] = useState(saved?.initialBalance || 0);
+
+  // Hydrate from DB on mount — recovers state after browser close
+  useEffect(() => {
+    base44.entities.BotSession.filter({ active: true }).then(sessions => {
+      if (sessions?.length > 0) {
+        const s = sessions[0];
+        setActive(true);
+        setAssignedCapital(s.assigned_capital || 0);
+        const prev = load();
+        sessionStorage.setItem(KEY, JSON.stringify({
+          active: true,
+          assignedCapital: s.assigned_capital,
+          startedAt: prev?.startedAt || new Date(s.started_at).getTime(),
+          initialBalance: prev?.initialBalance || 0,
+        }));
+      }
+    }).catch(() => {});
+  }, []);
 
   const activate = async (amount, krakenBalance = 0) => {
     const session = { active: true, assignedCapital: amount, startedAt: Date.now(), initialBalance: krakenBalance };
