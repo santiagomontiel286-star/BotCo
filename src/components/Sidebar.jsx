@@ -2,11 +2,12 @@ import { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { base44 } from "@/api/base44Client";
-import { LayoutDashboard, Cpu, TrendingUp, Brain, Shield, Clock, Wallet, Settings, Bell, X, Activity, Archive, ChevronRight, BarChart3 } from "lucide-react";
+import { LayoutDashboard, Cpu, TrendingUp, Brain, Shield, Clock, Wallet, Settings, Bell, X, Activity, Archive, ChevronRight, BarChart3, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navItems = [
   { path: "/", label: "Dashboard", icon: LayoutDashboard },
+  { path: "/operar", label: "Operar", icon: Zap },
   { path: "/bots", label: "Bots", icon: Cpu },
   { path: "/wallet", label: "Wallet", icon: Wallet },
   { path: "/settings", label: "Ajustes", icon: Settings },

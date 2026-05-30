@@ -4,7 +4,6 @@ import { DollarSign, TrendingUp, Percent, Shield, Wallet, RefreshCw, TrendingDow
 import useKrakenData from "../hooks/useKrakenData";
 import StatCard from "../components/StatCard";
 import BotCard from "../components/BotCard";
-import OperateButton from "../components/OperateButton";
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import { cn } from "@/lib/utils";
 
@@ -44,10 +43,6 @@ export default function Dashboard() {
           <p className="text-sm text-muted-foreground mt-1">Centro de control</p>
         </div>
         <div className="flex items-center gap-2">
-          <span className={cn("hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-mono font-semibold", isDemo ? "bg-accent/10 border-accent/30 text-accent" : "bg-primary/10 border-primary/30 text-primary")}>
-            {isDemo ? "⚠️ DEMO" : "● LIVE"}
-          </span>
-          <OperateButton />
           <button onClick={fetchKrakenBalance} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
             <RefreshCw className={cn("w-3.5 h-3.5", loadingKraken && "animate-spin")} />
             Actualizar Kraken
