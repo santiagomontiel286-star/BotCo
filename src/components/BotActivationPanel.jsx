@@ -306,7 +306,6 @@ export default function BotActivationPanel() {
   const { active, assignedCapital, initialBalance, sessionMode, startedAt, activate, deactivate } = useBotSession();
   const [modalOpen, setModalOpen] = useState(false);
   const [reportData, setReportData] = useState(null);
-  const sessionStart = sessions[0]?.started_at || (startedAt ? new Date(startedAt).toISOString() : new Date().toISOString());
   const [trades, setTrades] = useState(0);
   const [mode, setMode] = useState("real");
   const [demoCapital] = useState(10000);
@@ -320,6 +319,7 @@ export default function BotActivationPanel() {
   const currentProfile = sessions[0]?.risk_profile || getSavedProfile();
   const activeMode = sessions[0]?.mode || sessionMode || mode;
   const activeBots = buildBots(currentProfile);
+  const sessionStart = sessions[0]?.started_at || (startedAt ? new Date(startedAt).toISOString() : new Date().toISOString());
 
   const krakenBalance = totalUSD;
   const effectiveBalance = mode === "demo" ? demoCapital : krakenBalance;
