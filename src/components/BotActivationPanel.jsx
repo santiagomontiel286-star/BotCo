@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { base44 } from "@/api/base44Client";
 import useBotSession from "../hooks/useBotSession";
 import useKrakenData from "../hooks/useKrakenData";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { TrendingUp, RotateCcw, Brain, Shield, X, AlertTriangle, Rocket, Square, RefreshCw } from "lucide-react";
+import { TrendingUp, RotateCcw, Brain, Shield, Zap, BarChart2, X, AlertTriangle, Rocket, Square, RefreshCw } from "lucide-react";
 import LiveTradingChart from "./LiveTradingChart";
 import SessionReportModal from "./SessionReportModal";
 
@@ -13,15 +14,39 @@ const fmt = (n) =>
 
 const fmtPct = (n) => (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
 
-const BOTS = [
-  { id: "trend", name: "Trend Follower", icon: TrendingUp, pct: 35, color: "text-primary",  bar: "bg-primary" },
-  { id: "mean",  name: "Mean Reversion", icon: RotateCcw,  pct: 25, color: "text-accent",   bar: "bg-accent" },
-  { id: "ai",    name: "AI Sentiment",   icon: Brain,       pct: 25, color: "text-chart-4",  bar: "bg-chart-4" },
-  { id: "risk",  name: "Risk Guardian",  icon: Shield,      pct: 15, color: "text-chart-3",  bar: "bg-chart-3" },
-];
+// All 6 possible bots (strategy key → display config)
+const ALL_BOT_CONFIG = {
+  trend:        { name: "Trend Follower", icon: TrendingUp, color: "text-primary",  bar: "bg-primary"  },
+  rsi:          { name: "Mean Reversion", icon: RotateCcw,  color: "text-accent",   bar: "bg-accent"   },
+  momentum_ai:  { name: "AI Sentiment",   icon: Brain,      color: "text-chart-4",  bar: "bg-chart-4"  },
+  breakout_risk:{ name: "Risk Guardian",  icon: Shield,     color: "text-chart-3",  bar: "bg-chart-3"  },
+  momentum:     { name: "Momentum Bot",   icon: Zap,        color: "text-chart-2",  bar: "bg-chart-2"  },
+  breakout:     { name: "Breakout Bot",   icon: BarChart2,  color: "text-chart-5",  bar: "bg-chart-5"  },
+};
 
-// Modal
-function ActivationModal({ krakenBalance, portfolio, onActivate, onClose }) {
+// Strategies per profile (must match krakenBotEngine)
+const PROFILE_STRATEGIES = {
+  conservador: ["trend", "rsi", "momentum_ai", "breakout_risk"],
+  balanceado:  ["trend", "rsi", "momentum_ai", "breakout_risk", "momentum"],
+  agresivo:    ["trend", "rsi", "momentum_ai", "breakout_risk", "momentum", "breakout"],
+};
+
+// Distribute 100% among n bots (weighted towards first bots)
+function buildBots(profile) {
+  const strategies = PROFILE_STRATEGIES[profile] || PROFILE_STRATEGIES.conservador;
+  const n = strategies.length;
+  // Simple descending weight
+  const weights = strategies.map((_, i) => n - i);
+  const total = weights.reduce((a, b) => a + b, 0);
+  return strategies.map((key, i) => ({
+    key,
+    ...ALL_BOT_CONFIG[key],
+    pct: Math.round((weights[i] / total) * 100),
+  }));
+}
+
+// ── Activation Modal ──────────────────────────────────────────────────────────
+function ActivationModal({ krakenBalance, portfolio, bots, onActivate, onClose }) {
   const [amount, setAmount] = useState("");
   const [step, setStep] = useState(1);
   const [error, setError] = useState("");
@@ -57,7 +82,6 @@ function ActivationModal({ krakenBalance, portfolio, onActivate, onClose }) {
           </button>
         </div>
 
-        {/* Portfolio breakdown */}
         {portfolio.length > 0 && step === 1 && (
           <div className="bg-muted/40 rounded-xl p-3 mb-4 space-y-1.5">
             {portfolio.map(p => (
@@ -107,10 +131,10 @@ function ActivationModal({ krakenBalance, portfolio, onActivate, onClose }) {
             {parsed > 0 && parsed <= krakenBalance && (
               <div className="bg-muted/50 rounded-xl p-4 mb-5 border border-border/50">
                 <p className="text-[10px] text-muted-foreground mb-3 uppercase tracking-wider">
-                  Distribución — {pctOfBalance.toFixed(1)}% de tu portfolio
+                  Distribución — {pctOfBalance.toFixed(1)}% de tu portfolio · {bots.length} bots activos
                 </p>
-                {BOTS.map(b => (
-                  <div key={b.id} className="flex items-center justify-between mb-2.5">
+                {bots.map(b => (
+                  <div key={b.key} className="flex items-center justify-between mb-2.5">
                     <div className="flex items-center gap-2">
                       <b.icon className={cn("w-3.5 h-3.5", b.color)} />
                       <span className="text-xs text-muted-foreground">{b.name}</span>
@@ -139,7 +163,7 @@ function ActivationModal({ krakenBalance, portfolio, onActivate, onClose }) {
               </div>
               <div className="border-t border-border pt-2">
                 <p className="text-[11px] text-muted-foreground leading-relaxed">
-                  Los bots operarán 24/7 con <strong className="text-foreground">{fmt(parsed)}</strong>. Las ganancias diarias se retiran automáticamente y los bots continúan con el monto inicial.
+                  Los {bots.length} bots operarán 24/7 con <strong className="text-foreground">{fmt(parsed)}</strong>. Las ganancias diarias se retiran automáticamente y los bots continúan con el monto inicial.
                 </p>
               </div>
             </div>
@@ -154,7 +178,7 @@ function ActivationModal({ krakenBalance, portfolio, onActivate, onClose }) {
             <div className="flex gap-3">
               <Button variant="outline" onClick={() => setStep(1)} className="flex-1">Volver</Button>
               <Button onClick={() => onActivate(parsed)} className="flex-[2] gap-2">
-                <Rocket className="w-4 h-4" /> Activar bots ahora
+                <Rocket className="w-4 h-4" /> Activar {bots.length} bots ahora
               </Button>
             </div>
           </div>
@@ -164,8 +188,8 @@ function ActivationModal({ krakenBalance, portfolio, onActivate, onClose }) {
   );
 }
 
-// Panel activo
-function ActivePanel({ capital, pnl, trades, onStop, totalUSD }) {
+// ── Active Panel ──────────────────────────────────────────────────────────────
+function ActivePanel({ capital, pnl, trades, bots, onStop, totalUSD }) {
   const [elapsed, setElapsed] = useState(0);
   const [stopping, setStopping] = useState(false);
 
@@ -181,14 +205,13 @@ function ActivePanel({ capital, pnl, trades, onStop, totalUSD }) {
   const handleStop = () => { setStopping(true); setTimeout(() => onStop(elapsed), 2500); };
   const pnlPct = capital > 0 ? (pnl / capital) * 100 : 0;
   const isPositive = pnl >= 0;
-  const currentBalance = totalUSD > 0 ? totalUSD : null;
 
   return (
     <div className="bg-card border border-primary/30 rounded-2xl p-5 glow-green">
       <div className="flex items-center justify-between mb-5">
         <div className="flex items-center gap-2.5">
           <div className="w-2.5 h-2.5 rounded-full bg-primary animate-pulse" />
-          <span className="font-semibold text-foreground">Bots activos — Kraken Pro</span>
+          <span className="font-semibold text-foreground">Bots activos — {bots.length} estrategias</span>
         </div>
         <span className="font-mono text-sm text-muted-foreground">{hh}:{mm}:{ss}</span>
       </div>
@@ -199,23 +222,23 @@ function ActivePanel({ capital, pnl, trades, onStop, totalUSD }) {
           <p className="text-lg font-mono font-bold text-foreground">{fmt(capital)}</p>
         </div>
         <div className={cn("rounded-xl p-3 border", isPositive ? "bg-primary/10 border-primary/20" : "bg-destructive/10 border-destructive/20")}>
-          <p className={cn("text-[10px] mb-1", isPositive ? "text-primary" : "text-destructive")}>P&amp;L real sesión</p>
+          <p className={cn("text-[10px] mb-1", isPositive ? "text-primary" : "text-destructive")}>P&amp;L sesión</p>
           <p className={cn("text-lg font-mono font-bold", isPositive ? "text-primary" : "text-destructive")}>
             {fmt(pnl)} <span className="text-xs">({fmtPct(pnlPct)})</span>
           </p>
-          {currentBalance !== null && (
-            <p className="text-[10px] text-muted-foreground mt-0.5">Balance actual: {fmt(currentBalance)}</p>
+          {totalUSD > 0 && (
+            <p className="text-[10px] text-muted-foreground mt-0.5">Balance: {fmt(totalUSD)}</p>
           )}
         </div>
         <div className="bg-muted/50 rounded-xl p-3 border border-border/50">
-          <p className="text-[10px] text-muted-foreground mb-1">Operaciones hoy</p>
+          <p className="text-[10px] text-muted-foreground mb-1">Operaciones</p>
           <p className="text-lg font-mono font-bold text-foreground">{trades}</p>
         </div>
       </div>
 
       <div className="space-y-2.5 mb-5">
-        {BOTS.map(b => (
-          <div key={b.id} className="flex items-center gap-3">
+        {bots.map(b => (
+          <div key={b.key} className="flex items-center gap-3">
             <b.icon className={cn("w-3.5 h-3.5 flex-shrink-0", b.color)} />
             <span className="text-xs text-muted-foreground w-28 truncate">{b.name}</span>
             <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
@@ -241,7 +264,7 @@ function ActivePanel({ capital, pnl, trades, onStop, totalUSD }) {
   );
 }
 
-// Principal
+// ── Main Component ────────────────────────────────────────────────────────────
 export default function BotActivationPanel() {
   const { portfolio, totalUSD, balance: krakenBalances, loading: loadingBalance, error: balanceError, refresh: fetchBalance } = useKrakenData({ intervalMs: 30000 });
   const { active, assignedCapital, initialBalance, activate, deactivate } = useBotSession();
@@ -249,20 +272,28 @@ export default function BotActivationPanel() {
   const [reportData, setReportData] = useState(null);
   const [sessionStart] = useState(new Date().toISOString());
   const [trades, setTrades] = useState(0);
-  const krakenBalance = totalUSD;
   const [mode, setMode] = useState("real");
   const [demoCapital] = useState(10000);
-  const effectiveBalance = mode === "demo" ? demoCapital : krakenBalance;
 
-  // Real PnL = current Kraken balance minus balance at session start
+  // Get current risk profile from active session
+  const { data: sessions = [] } = useQuery({
+    queryKey: ["activeBotSession"],
+    queryFn: () => base44.entities.BotSession.filter({ active: true }),
+    refetchInterval: 15000,
+  });
+  const currentProfile = sessions[0]?.risk_profile || "conservador";
+  const activeBots = buildBots(currentProfile);
+
+  const krakenBalance = totalUSD;
+  const effectiveBalance = mode === "demo" ? demoCapital : krakenBalance;
   const pnl = active && initialBalance > 0 ? parseFloat((totalUSD - initialBalance).toFixed(2)) : 0;
 
-  // Poll BotSession for real trade count
+  // Poll trade count from session
   useEffect(() => {
     if (!active) return;
     const fetchTrades = async () => {
-      const sessions = await base44.entities.BotSession.filter({ active: true });
-      if (sessions?.[0]) setTrades(sessions[0].total_trades || 0);
+      const s = await base44.entities.BotSession.filter({ active: true });
+      if (s?.[0]) setTrades(s[0].total_trades || 0);
     };
     fetchTrades();
     const t = setInterval(fetchTrades, 30000);
@@ -274,27 +305,44 @@ export default function BotActivationPanel() {
     setTrades(0);
     setModalOpen(false);
   };
+
   const handleStop = async (elapsedSeconds) => {
     setReportData({ capital: assignedCapital, pnl, trades, elapsedSeconds: elapsedSeconds || 0, startedAt: sessionStart });
     await deactivate();
   };
 
+  const PROFILE_LABELS = { conservador: "Conservador", balanceado: "Balanceado", agresivo: "Agresivo" };
+
   return (
     <div className="space-y-4">
       {active ? (
-        <ActivePanel capital={assignedCapital} pnl={pnl} trades={trades} onStop={handleStop} totalUSD={totalUSD} />
+        <ActivePanel
+          capital={assignedCapital}
+          pnl={pnl}
+          trades={trades}
+          bots={activeBots}
+          onStop={handleStop}
+          totalUSD={totalUSD}
+        />
       ) : (
-        <div className="bg-card border border-border rounded-2xl p-5 gap-4">
+        <div className="bg-card border border-border rounded-2xl p-5">
           {/* Mode selector */}
           <div className="flex gap-1 bg-muted/50 rounded-lg p-1 border border-border w-fit mb-4">
-            <button onClick={() => setMode("real")} className={cn("px-4 py-1.5 text-xs font-semibold rounded-md transition-colors", mode === "real" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>🔴 Real</button>
-            <button onClick={() => setMode("demo")} className={cn("px-4 py-1.5 text-xs font-semibold rounded-md transition-colors", mode === "demo" ? "bg-chart-3/20 text-chart-3 shadow-sm" : "text-muted-foreground hover:text-foreground")}>🎮 Demo</button>
+            <button onClick={() => setMode("real")} className={cn("px-4 py-1.5 text-xs font-semibold rounded-md transition-colors", mode === "real" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>
+              🔴 Real
+            </button>
+            <button onClick={() => setMode("demo")} className={cn("px-4 py-1.5 text-xs font-semibold rounded-md transition-colors", mode === "demo" ? "bg-chart-3/20 text-chart-3 shadow-sm" : "text-muted-foreground hover:text-foreground")}>
+              🎮 Demo
+            </button>
           </div>
+
           <div className="flex items-start justify-between flex-wrap gap-3 mb-3">
             <div className="flex-1">
-              <h3 className="font-semibold text-foreground mb-0.5">{mode === "demo" ? "Modo Demo — Capital Simulado" : "Operación con capital real"}</h3>
+              <h3 className="font-semibold text-foreground mb-0.5">
+                {mode === "demo" ? "Modo Demo — Capital Simulado" : "Operación con capital real"}
+              </h3>
               <p className="text-xs text-muted-foreground">
-                {mode === "demo" ? "Capital demo:" : "Portfolio total Kraken:"}{" "}
+                {mode === "demo" ? "Capital demo: " : "Portfolio total Kraken: "}
                 {mode === "demo"
                   ? <strong className="text-chart-3">${demoCapital.toLocaleString('en-US')} USD (simulado)</strong>
                   : loadingBalance
@@ -304,19 +352,25 @@ export default function BotActivationPanel() {
                       : <strong className="text-foreground">${krakenBalance.toLocaleString('en-US', { maximumFractionDigits: 2 })} USD</strong>
                 }
               </p>
-              <p className="text-[11px] text-muted-foreground mt-0.5">{mode === "demo" ? "Las órdenes se simulan — no se opera con dinero real" : "Los bots operarán 24/7 hasta que ordenes la parada inteligente"}</p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                Perfil activo: <strong className="text-foreground">{PROFILE_LABELS[currentProfile]}</strong> · {activeBots.length} bots
+              </p>
             </div>
             <div className="flex items-center gap-2">
               <Button onClick={fetchBalance} variant="ghost" size="icon" disabled={loadingBalance} className="shrink-0">
                 <RefreshCw className={cn("w-4 h-4", loadingBalance && "animate-spin")} />
               </Button>
-              <Button onClick={() => setModalOpen(true)} className="gap-2" disabled={mode === "real" && (loadingBalance || !!balanceError || krakenBalance <= 0)}>
+              <Button
+                onClick={() => setModalOpen(true)}
+                className="gap-2"
+                disabled={mode === "real" && (loadingBalance || !!balanceError || krakenBalance <= 0)}
+              >
                 <Rocket className="w-4 h-4" /> Activar bots
               </Button>
             </div>
           </div>
 
-          {/* Portfolio detallado */}
+          {/* Portfolio grid */}
           {portfolio.length > 0 && (
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
               {portfolio.map(p => (
@@ -338,9 +392,10 @@ export default function BotActivationPanel() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {BOTS.map(b => (
-          <div key={b.id} className="bg-card border border-border rounded-xl p-3">
+      {/* Bot grid — reflects active profile */}
+      <div className={cn("grid gap-3", activeBots.length <= 4 ? "grid-cols-2 sm:grid-cols-4" : activeBots.length === 5 ? "grid-cols-2 sm:grid-cols-5" : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-6")}>
+        {activeBots.map(b => (
+          <div key={b.key} className="bg-card border border-border rounded-xl p-3">
             <div className="flex items-center gap-2 mb-1">
               <b.icon className={cn("w-3.5 h-3.5", b.color)} />
               <span className={cn("text-xs font-bold", b.color)}>{b.pct}%</span>
@@ -355,6 +410,7 @@ export default function BotActivationPanel() {
         ))}
       </div>
 
+      {/* SentinelAI protocol */}
       <div className="bg-card border border-border rounded-xl p-4">
         <p className="text-xs font-semibold text-foreground mb-2">Protocolo SentinelAI activo</p>
         <div className="grid sm:grid-cols-3 gap-2 text-[11px] text-muted-foreground">
@@ -373,6 +429,7 @@ export default function BotActivationPanel() {
         <ActivationModal
           krakenBalance={effectiveBalance}
           portfolio={portfolio}
+          bots={activeBots}
           onActivate={handleActivate}
           onClose={() => setModalOpen(false)}
         />
