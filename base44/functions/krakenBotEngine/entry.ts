@@ -210,6 +210,16 @@ function simulatePrice(price, side) {
   return side === "buy" ? price * (1 + slippage) : price * (1 - slippage);
 }
 
+async function createBotAlert(base44, { title, message, severity = "info" }) {
+  await base44.asServiceRole.entities.Alert.create({
+    title,
+    message,
+    severity,
+    source: "Kraken Bot Engine",
+    is_read: false,
+  });
+}
+
 // ── Main handler ───────────────────────────────────────────────────────────────
 
 Deno.serve(async (req) => {
@@ -302,6 +312,11 @@ Deno.serve(async (req) => {
         });
 
         hasOpenTrade = false;
+        await createBotAlert(base44, {
+          title: `Operación cerrada: ${trade.pair}`,
+          message: `${reason} · P&L: ${pnl.toFixed(4)} · Modo ${sessionMode.toUpperCase()}`,
+          severity: pnl >= 0 ? "success" : "warning",
+        });
         log.push({ action: "closed", pair: trade.pair, reason, pnl: pnl.toFixed(4), mode: sessionMode });
       }
     }
@@ -379,6 +394,11 @@ Deno.serve(async (req) => {
       if (sessionMode === "real") {
         const result = await placeOrder(pair, "buy", volume, apiKey, apiSecret);
         if (result.error?.length) {
+          await createBotAlert(base44, {
+            title: `Error ejecutando orden: ${PAIR_LABELS[pair]}`,
+            message: result.error[0],
+            severity: "critical",
+          });
           log.push({ pair: PAIR_LABELS[pair], status: "error", error: result.error[0] });
           continue;
         }
@@ -399,6 +419,12 @@ Deno.serve(async (req) => {
         stop_loss:   parseFloat((entryPrice * (1 - SL)).toFixed(4)),
         entry_date:  new Date().toISOString(),
         notes: `[${sessionMode.toUpperCase()}·${profileKey}] Score: ${score}/100 | Voters: ${buyVotes.join(", ")} | €${capital.toFixed(2)}${txids.length ? ` | TxID: ${txids[0]}` : ""}`,
+      });
+
+      await createBotAlert(base44, {
+        title: `Nueva operación abierta: ${PAIR_LABELS[pair]}`,
+        message: `${executingBot} abrió compra · Score ${score}/100 · Modo ${sessionMode.toUpperCase()}`,
+        severity: "info",
       });
 
       log.push({

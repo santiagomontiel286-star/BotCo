@@ -10,7 +10,6 @@ const navItems = [
   { path: "/operar", label: "Operar", icon: Zap },
   { path: "/bots", label: "Bots", icon: Cpu },
   { path: "/wallet", label: "Wallet", icon: Wallet },
-  { path: "/settings", label: "Ajustes", icon: Settings },
 ];
 
 const analysisItems = [
@@ -41,8 +40,8 @@ export default function Sidebar({ open, onClose }) {
   const isAnalysisActive = analysisItems.some(item => item.path === location.pathname);
   const isRecordsActive = recordsItems.some(item => item.path === location.pathname);
 
-  const renderFlyout = (items) => (
-    <div className="absolute left-full top-0 ml-2 w-56 rounded-xl border border-border bg-card shadow-2xl p-2 z-[60]">
+  const renderSubmenu = (items) => (
+    <div className="mt-1 ml-4 space-y-1 border-l border-sidebar-border pl-2">
       {items.map(item => {
         const active = location.pathname === item.path;
         return (
@@ -51,8 +50,8 @@ export default function Sidebar({ open, onClose }) {
             to={item.path}
             onClick={onClose}
             className={cn(
-              "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all",
-              active ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"
+              "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all",
+              active ? "bg-primary/10 text-primary" : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
             )}
           >
             <item.icon className="w-4 h-4" />
@@ -109,7 +108,7 @@ export default function Sidebar({ open, onClose }) {
             );
           })}
 
-          <div className="relative" onMouseEnter={() => setOpenMenu("analysis")} onMouseLeave={() => setOpenMenu(null)}>
+          <div>
             <button
               onClick={() => setOpenMenu(openMenu === "analysis" ? null : "analysis")}
               className={cn(
@@ -119,12 +118,12 @@ export default function Sidebar({ open, onClose }) {
             >
               <BarChart3 className="w-[18px] h-[18px]" />
               Análisis
-              <ChevronRight className="w-4 h-4 ml-auto" />
+              <ChevronRight className={cn("w-4 h-4 ml-auto transition-transform", openMenu === "analysis" && "rotate-90")} />
             </button>
-            {openMenu === "analysis" && renderFlyout(analysisItems)}
+            {(openMenu === "analysis" || isAnalysisActive) && renderSubmenu(analysisItems)}
           </div>
 
-          <div className="relative" onMouseEnter={() => setOpenMenu("records")} onMouseLeave={() => setOpenMenu(null)}>
+          <div>
             <button
               onClick={() => setOpenMenu(openMenu === "records" ? null : "records")}
               className={cn(
@@ -134,10 +133,24 @@ export default function Sidebar({ open, onClose }) {
             >
               <Clock className="w-[18px] h-[18px]" />
               Historial
-              <ChevronRight className="w-4 h-4 ml-auto" />
+              <ChevronRight className={cn("w-4 h-4 ml-auto transition-transform", openMenu === "records" && "rotate-90")} />
             </button>
-            {openMenu === "records" && renderFlyout(recordsItems)}
+            {(openMenu === "records" || isRecordsActive) && renderSubmenu(recordsItems)}
           </div>
+
+          <Link
+            to="/settings"
+            onClick={onClose}
+            className={cn(
+              "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 mt-3 pt-3 border-t border-sidebar-border",
+              location.pathname === "/settings"
+                ? "bg-primary/10 text-primary glow-green-sm"
+                : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+            )}
+          >
+            <Settings className={cn("w-[18px] h-[18px]", location.pathname === "/settings" && "text-primary")} />
+            Ajustes
+          </Link>
         </nav>
 
         <div className="p-4 mx-3 mb-4 rounded-lg bg-primary/5 border border-primary/10">

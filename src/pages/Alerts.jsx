@@ -13,7 +13,12 @@ const sevConfig = {
 
 export default function Alerts() {
   const queryClient = useQueryClient();
-  const { data: alerts = [], isLoading } = useQuery({ queryKey: ["alerts"], queryFn: () => base44.entities.Alert.list("-created_date", 50) });
+  const { data: alerts = [], isLoading } = useQuery({
+    queryKey: ["alerts"],
+    queryFn: () => base44.entities.Alert.list("-created_date", 50),
+    refetchInterval: 5000,
+    refetchIntervalInBackground: true,
+  });
 
   const markRead = useMutation({
     mutationFn: (id) => base44.entities.Alert.update(id, { is_read: true }),
