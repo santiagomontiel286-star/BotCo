@@ -25,14 +25,14 @@ export default function SessionReportModal({ sessionData, onClose }) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
-  const { capital, pnl, elapsedSeconds, startedAt } = sessionData;
+  const { capital, pnl, elapsedSeconds, startedAt, mode = "real" } = sessionData;
   const [realTrades, setRealTrades] = useState([]);
 
   // Fetch real trades from the session period
   useEffect(() => {
     base44.entities.Trade.filter({}).then(all => {
       const sessionStart = startedAt ? new Date(startedAt).getTime() : Date.now() - elapsedSeconds * 1000;
-      const sessionTrades = all.filter(t => new Date(t.entry_date || t.created_date).getTime() >= sessionStart - 60000);
+      const sessionTrades = all.filter(t => (t.mode || "real") === mode && new Date(t.entry_date || t.created_date).getTime() >= sessionStart - 60000);
       setRealTrades(sessionTrades);
     }).catch(() => {});
   }, []);
@@ -58,6 +58,7 @@ export default function SessionReportModal({ sessionData, onClose }) {
   const handleSave = async () => {
     setSaving(true);
     await base44.entities.SessionReport.create({
+      mode,
       started_at: startedAt || new Date(Date.now() - elapsedSeconds * 1000).toISOString(),
       ended_at: new Date().toISOString(),
       duration_seconds: elapsedSeconds,
@@ -78,7 +79,7 @@ export default function SessionReportModal({ sessionData, onClose }) {
         {/* Header */}
         <div className={cn("p-5 border-b border-border", isPositive ? "bg-primary/5" : "bg-destructive/5")}>
           <div className="flex items-center justify-between mb-1">
-            <h3 className="text-lg font-bold text-foreground">Resumen de Sesión</h3>
+            <h3 className="text-lg font-bold text-foreground">Resumen de Sesión {mode === "demo" ? "DEMO" : "LIVE"}</h3>
             <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
               <X className="w-5 h-5" />
             </button>

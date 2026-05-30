@@ -190,10 +190,10 @@ function ActivationModal({ krakenBalance, portfolio, bots, onActivate, onClose }
 }
 
 // ── Active Panel ──────────────────────────────────────────────────────────────
-function ActivePanel({ capital, pnl, trades, bots, onStop, totalUSD }) {
+function ActivePanel({ capital, pnl, trades, bots, onStop, totalUSD, mode }) {
   const { data: openTrades = [] } = useQuery({
-    queryKey: ["openTrades"],
-    queryFn: () => base44.entities.Trade.filter({ status: "open" }),
+    queryKey: ["openTrades", mode],
+    queryFn: () => base44.entities.Trade.filter({ status: "open", mode }),
     refetchInterval: 10000,
   });
 
@@ -232,7 +232,7 @@ function ActivePanel({ capital, pnl, trades, bots, onStop, totalUSD }) {
           <p className={cn("text-lg font-mono font-bold", isPositive ? "text-primary" : "text-destructive")}>
             {fmt(pnl)} <span className="text-xs">({fmtPct(pnlPct)})</span>
           </p>
-          {totalUSD > 0 && (
+          {mode === "real" && totalUSD > 0 && (
             <p className="text-[10px] text-muted-foreground mt-0.5">Balance: {fmt(totalUSD)}</p>
           )}
         </div>
@@ -298,7 +298,7 @@ function ActivePanel({ capital, pnl, trades, bots, onStop, totalUSD }) {
 // ── Main Component ────────────────────────────────────────────────────────────
 export default function BotActivationPanel() {
   const { portfolio, totalUSD, balance: krakenBalances, loading: loadingBalance, error: balanceError, refresh: fetchBalance } = useKrakenData({ intervalMs: 30000 });
-  const { active, assignedCapital, initialBalance, activate, deactivate } = useBotSession();
+  const { active, assignedCapital, initialBalance, sessionMode, activate, deactivate } = useBotSession();
   const [modalOpen, setModalOpen] = useState(false);
   const [reportData, setReportData] = useState(null);
   const [sessionStart] = useState(new Date().toISOString());
@@ -313,11 +313,16 @@ export default function BotActivationPanel() {
     refetchInterval: 15000,
   });
   const currentProfile = sessions[0]?.risk_profile || getSavedProfile();
+  const activeMode = sessions[0]?.mode || sessionMode || mode;
   const activeBots = buildBots(currentProfile);
 
   const krakenBalance = totalUSD;
   const effectiveBalance = mode === "demo" ? demoCapital : krakenBalance;
-  const pnl = active && initialBalance > 0 ? parseFloat((totalUSD - initialBalance).toFixed(2)) : 0;
+  const pnl = active
+    ? activeMode === "demo"
+      ? parseFloat((sessions[0]?.total_pnl || 0).toFixed(2))
+      : initialBalance > 0 ? parseFloat((totalUSD - initialBalance).toFixed(2)) : 0
+    : 0;
 
   // Poll trade count from session
   useEffect(() => {
@@ -332,13 +337,13 @@ export default function BotActivationPanel() {
   }, [active]);
 
   const handleActivate = async (amount) => {
-    await activate(amount, totalUSD, mode);
+    await activate(amount, mode === "demo" ? amount : totalUSD, mode);
     setTrades(0);
     setModalOpen(false);
   };
 
   const handleStop = async (elapsedSeconds) => {
-    setReportData({ capital: assignedCapital, pnl, trades, elapsedSeconds: elapsedSeconds || 0, startedAt: sessionStart });
+    setReportData({ capital: assignedCapital, pnl, trades, elapsedSeconds: elapsedSeconds || 0, startedAt: sessionStart, mode: activeMode });
     await deactivate();
   };
 
@@ -354,6 +359,7 @@ export default function BotActivationPanel() {
           bots={activeBots}
           onStop={handleStop}
           totalUSD={totalUSD}
+          mode={activeMode}
         />
       ) : (
         <div className="bg-card border border-border rounded-2xl p-5">

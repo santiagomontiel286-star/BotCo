@@ -2,6 +2,15 @@
   "name": "SessionReport",
   "type": "object",
   "properties": {
+    "mode": {
+      "type": "string",
+      "enum": [
+        "real",
+        "demo"
+      ],
+      "default": "real",
+      "description": "Separates real session reports from demo session reports"
+    },
     "started_at": {
       "type": "string"
     },

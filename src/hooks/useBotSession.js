@@ -29,12 +29,14 @@ export default function useBotSession() {
         const s = sessions[0];
         setActive(true);
         setAssignedCapital(s.assigned_capital || 0);
+        setSessionMode(s.mode || "real");
         const prev = load();
         sessionStorage.setItem(KEY, JSON.stringify({
           active: true,
           assignedCapital: s.assigned_capital,
           startedAt: prev?.startedAt || new Date(s.started_at).getTime(),
-          initialBalance: prev?.initialBalance || 0,
+          initialBalance: prev?.initialBalance || s.assigned_capital || 0,
+          mode: s.mode || "real",
         }));
       }
     }).catch(() => {});

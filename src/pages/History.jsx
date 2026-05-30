@@ -23,7 +23,9 @@ const monthlyStats = [
 
 export default function History() {
   const [statusFilter, setStatusFilter] = useState("all");
-  const { data: trades = [], isLoading } = useQuery({ queryKey: ["trades"], queryFn: () => base44.entities.Trade.list("-created_date", 50) });
+  const { data: sessions = [] } = useQuery({ queryKey: ["activeBotSession"], queryFn: () => base44.entities.BotSession.filter({ active: true }), refetchInterval: 15000 });
+  const activeMode = sessions[0]?.mode || "real";
+  const { data: trades = [], isLoading } = useQuery({ queryKey: ["trades", activeMode], queryFn: () => base44.entities.Trade.filter({ mode: activeMode }, "-created_date", 50) });
 
   const filtered = statusFilter === "all" ? trades : trades.filter(t => t.status === statusFilter);
   const totalPnL = trades.reduce((s, t) => s + (t.profit_loss || 0), 0);
@@ -38,7 +40,7 @@ export default function History() {
         </div>
         <div>
           <h2 className="text-2xl font-bold text-foreground tracking-tight">Historial</h2>
-          <p className="text-sm text-muted-foreground">Registro completo de operaciones</p>
+          <p className="text-sm text-muted-foreground">Registro completo de operaciones · {activeMode === "demo" ? "DEMO" : "LIVE"}</p>
         </div>
       </div>
 

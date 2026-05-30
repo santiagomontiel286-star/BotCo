@@ -2,6 +2,15 @@
   "name": "Trade",
   "type": "object",
   "properties": {
+    "mode": {
+      "type": "string",
+      "enum": [
+        "real",
+        "demo"
+      ],
+      "default": "real",
+      "description": "Separates real Kraken trades from simulated demo trades"
+    },
     "bot_name": {
       "type": "string"
     },

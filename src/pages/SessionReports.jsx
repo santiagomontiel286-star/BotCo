@@ -13,10 +13,13 @@ const fmtDuration = (s) => {
 };
 
 export default function SessionReports() {
-  const { data: reports = [], isLoading } = useQuery({
-    queryKey: ["session_reports"],
-    queryFn: () => base44.entities.SessionReport.list("-created_date", 50),
+  const { data: sessions = [] } = useQuery({ queryKey: ["activeBotSession"], queryFn: () => base44.entities.BotSession.filter({ active: true }), refetchInterval: 15000 });
+  const activeMode = sessions[0]?.mode || "real";
+  const { data: allReports = [], isLoading } = useQuery({
+    queryKey: ["session_reports", activeMode],
+    queryFn: () => base44.entities.SessionReport.filter({ mode: activeMode }, "-created_date", 50),
   });
+  const reports = allReports.filter(r => (r.duration_seconds || 0) >= 60);
 
   const totalPnl = reports.reduce((s, r) => s + (r.pnl || 0), 0);
   const totalTrades = reports.reduce((s, r) => s + (r.trades_count || 0), 0);

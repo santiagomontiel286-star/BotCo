@@ -4,25 +4,31 @@ import { DollarSign, TrendingUp, Percent, Shield, Wallet, RefreshCw, TrendingDow
 import useKrakenData from "../hooks/useKrakenData";
 import StatCard from "../components/StatCard";
 import BotCard from "../components/BotCard";
+import OperateButton from "../components/OperateButton";
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import { cn } from "@/lib/utils";
 
 export default function Dashboard() {
   const { data: bots = [] } = useQuery({ queryKey: ["bots"], queryFn: () => base44.entities.Bot.list() });
+  const { data: sessions = [] } = useQuery({ queryKey: ["activeBotSession"], queryFn: () => base44.entities.BotSession.filter({ active: true }), refetchInterval: 15000 });
   const { portfolio, totalUSD, openOrders, trades: krakenTrades, loading: loadingKraken, error: krakenError, refresh: fetchKrakenBalance, fetchedAt } = useKrakenData({ intervalMs: 30000 });
+  const activeMode = sessions[0]?.mode || "real";
+  const isDemo = activeMode === "demo";
 
   const activeBots = bots.filter(b => b.status === "active").length;
 
-  // Real Kraken metrics
-  const netPnl = krakenTrades.reduce((s, t) => s + (t.net || 0), 0);
-  const winTrades = krakenTrades.filter(t => t.net > 0).length;
-  const winRate = krakenTrades.length > 0 ? (winTrades / krakenTrades.length) * 100 : 0;
-  const roiPct = totalUSD > 0 && netPnl !== 0 ? (netPnl / (totalUSD - netPnl)) * 100 : 0;
+  // Demo never reads Kraken metrics, preventing visual contamination with Live data.
+  const visibleKrakenTrades = isDemo ? [] : krakenTrades;
+  const visibleOpenOrders = isDemo ? [] : openOrders;
+  const netPnl = visibleKrakenTrades.reduce((s, t) => s + (t.net || 0), 0);
+  const winTrades = visibleKrakenTrades.filter(t => t.net > 0).length;
+  const winRate = visibleKrakenTrades.length > 0 ? (winTrades / visibleKrakenTrades.length) * 100 : 0;
+  const roiPct = !isDemo && totalUSD > 0 && netPnl !== 0 ? (netPnl / (totalUSD - netPnl)) * 100 : 0;
 
   // Real equity curve from Kraken trade history (oldest → newest)
   const equityData = (() => {
-    if (krakenTrades.length === 0) return [];
-    const sorted = [...krakenTrades].reverse();
+    if (visibleKrakenTrades.length === 0) return [];
+    const sorted = [...visibleKrakenTrades].reverse();
     let running = totalUSD - netPnl;
     return sorted.map(t => {
       running += (t.net || 0);
@@ -37,14 +43,20 @@ export default function Dashboard() {
           <h2 className="text-2xl font-bold text-foreground tracking-tight">Dashboard</h2>
           <p className="text-sm text-muted-foreground mt-1">Centro de control</p>
         </div>
-        <button onClick={fetchKrakenBalance} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
-          <RefreshCw className={cn("w-3.5 h-3.5", loadingKraken && "animate-spin")} />
-          Actualizar Kraken
-        </button>
+        <div className="flex items-center gap-2">
+          <span className={cn("hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-mono font-semibold", isDemo ? "bg-accent/10 border-accent/30 text-accent" : "bg-primary/10 border-primary/30 text-primary")}>
+            {isDemo ? "⚠️ DEMO" : "● LIVE"}
+          </span>
+          <OperateButton />
+          <button onClick={fetchKrakenBalance} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
+            <RefreshCw className={cn("w-3.5 h-3.5", loadingKraken && "animate-spin")} />
+            Actualizar Kraken
+          </button>
+        </div>
       </div>
 
       {/* Kraken Real Balance */}
-      <div className="bg-primary/5 border border-primary/20 rounded-xl p-4">
+      {!isDemo && <div className="bg-primary/5 border border-primary/20 rounded-xl p-4">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
             <Wallet className="w-4 h-4 text-primary" />
@@ -88,10 +100,10 @@ export default function Dashboard() {
         {!loadingKraken && portfolio.length === 0 && !krakenError && (
           <p className="text-sm text-muted-foreground">Sin activos detectados en Kraken.</p>
         )}
-        {openOrders.length > 0 && (
+        {visibleOpenOrders.length > 0 && (
           <div className="mt-3 pt-3 border-t border-primary/10">
-            <p className="text-[10px] text-muted-foreground mb-1.5">Órdenes abiertas en Kraken ({openOrders.length})</p>
-            {openOrders.map((o, i) => (
+            <p className="text-[10px] text-muted-foreground mb-1.5">Órdenes abiertas en Kraken ({visibleOpenOrders.length})</p>
+            {visibleOpenOrders.map((o, i) => (
               <div key={i} className="flex justify-between text-[10px] py-0.5">
                 <span className="text-foreground font-semibold">{o.pair}</span>
                 <span className={o.type === 'buy' ? 'text-primary' : 'text-destructive'}>{o.type?.toUpperCase()} {o.ordertype}</span>
@@ -100,13 +112,20 @@ export default function Dashboard() {
             ))}
           </div>
         )}
-      </div>
+      </div>}
+
+      {isDemo && (
+        <div className="bg-accent/10 border border-accent/25 rounded-xl p-4">
+          <p className="text-sm font-semibold text-accent">⚠️ MODO DEMO — Capital ficticio. Ninguna operación es real.</p>
+          <p className="text-xs text-muted-foreground mt-1">El Dashboard Live queda aislado; las métricas reales de Kraken no se mezclan con la simulación.</p>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatCard label="Balance Total" value={totalUSD} prefix="$" icon={DollarSign} change={roiPct} positive={roiPct >= 0} />
-        <StatCard label="P&L Acumulado" value={netPnl} prefix="$" icon={TrendingUp} change={roiPct} positive={netPnl >= 0} />
-        <StatCard label="Win Rate" value={winRate} suffix="%" icon={Percent} positive={winRate >= 50} />
-        <StatCard label="Trades Totales" value={krakenTrades.length} icon={Shield} positive={true} />
+        <StatCard label="Balance Total" value={isDemo ? 10000 : totalUSD} prefix="$" icon={DollarSign} change={isDemo ? 0 : roiPct} positive={isDemo || roiPct >= 0} />
+        <StatCard label="P&L Acumulado" value={isDemo ? (sessions[0]?.total_pnl || 0) : netPnl} prefix="$" icon={TrendingUp} change={isDemo ? 0 : roiPct} positive={isDemo ? (sessions[0]?.total_pnl || 0) >= 0 : netPnl >= 0} />
+        <StatCard label="Win Rate" value={isDemo ? 0 : winRate} suffix="%" icon={Percent} positive={isDemo || winRate >= 50} />
+        <StatCard label="Trades Totales" value={isDemo ? (sessions[0]?.total_trades || 0) : visibleKrakenTrades.length} icon={Shield} positive={true} />
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -116,7 +135,7 @@ export default function Dashboard() {
         </div>
         <div className="bg-card rounded-xl border border-border p-4">
           <span className="text-xs text-muted-foreground uppercase tracking-wider">Órdenes Abiertas</span>
-          <p className="text-xl font-mono font-bold text-foreground mt-1">{openOrders.length}</p>
+          <p className="text-xl font-mono font-bold text-foreground mt-1">{visibleOpenOrders.length}</p>
         </div>
         <div className="bg-card rounded-xl border border-border p-4">
           <span className="text-xs text-muted-foreground uppercase tracking-wider">Riesgo Máx/Trade</span>
@@ -167,7 +186,7 @@ export default function Dashboard() {
       </div>
 
       <div className="bg-card rounded-xl border border-border p-5">
-        <h3 className="text-sm font-semibold text-foreground mb-4">Últimas Operaciones (Kraken)</h3>
+        <h3 className="text-sm font-semibold text-foreground mb-4">Últimas Operaciones {isDemo ? "(Demo)" : "(Kraken)"}</h3>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead>
@@ -182,7 +201,7 @@ export default function Dashboard() {
               </tr>
             </thead>
             <tbody>
-              {krakenTrades.slice(0, 10).map((t, i) => (
+              {visibleKrakenTrades.slice(0, 10).map((t, i) => (
                 <tr key={i} className="border-b border-border/50 hover:bg-muted/30">
                   <td className="py-2.5 font-mono font-semibold text-foreground">{t.pair}</td>
                   <td className="py-2.5"><span className={t.type === "buy" ? "text-profit" : "text-loss"}>{t.type?.toUpperCase()}</span></td>
@@ -197,9 +216,9 @@ export default function Dashboard() {
               ))}
             </tbody>
           </table>
-          {krakenTrades.length === 0 && (
+          {visibleKrakenTrades.length === 0 && (
             <p className="text-sm text-muted-foreground text-center py-6">
-              {loadingKraken ? "Cargando trades de Kraken..." : "Sin historial de trades en Kraken"}
+              {isDemo ? "El modo Demo usa operaciones simuladas aisladas." : loadingKraken ? "Cargando trades de Kraken..." : "Sin historial de trades en Kraken"}
             </p>
           )}
         </div>

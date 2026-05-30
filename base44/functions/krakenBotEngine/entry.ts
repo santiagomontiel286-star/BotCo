@@ -247,7 +247,7 @@ Deno.serve(async (req) => {
     log.push({ sessionMode, profileKey, activeBots: activeBots.map(b => b.name) });
 
     // ── 1. Manage open trade ──────────────────────────────────────────────────
-    const openTrades   = await base44.asServiceRole.entities.Trade.filter({ status: "open" });
+    const openTrades   = await base44.asServiceRole.entities.Trade.filter({ status: "open", mode: sessionMode });
     let   hasOpenTrade = openTrades.length > 0;
 
     for (const trade of openTrades) {
@@ -317,7 +317,7 @@ Deno.serve(async (req) => {
       availableEUR = await getAvailableEUR(apiKey, apiSecret);
     } else {
       // Demo: starting capital + accumulated session P&L
-      const closedTrades  = await base44.asServiceRole.entities.Trade.filter({ status: "closed" });
+      const closedTrades  = await base44.asServiceRole.entities.Trade.filter({ status: "closed", mode: "demo" });
       const sessionStart  = new Date(session.started_at || session.created_date).getTime();
       const sessionPnl    = closedTrades
         .filter(t => new Date(t.entry_date || t.created_date).getTime() >= sessionStart - 60000)
@@ -388,6 +388,7 @@ Deno.serve(async (req) => {
       const entryPrice = sessionMode === "demo" ? simulatePrice(price, "buy") : price;
 
       await base44.asServiceRole.entities.Trade.create({
+        mode:        sessionMode,
         bot_name:    executingBot,
         pair:        PAIR_LABELS[pair],
         side:        "buy",
