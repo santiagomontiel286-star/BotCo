@@ -191,6 +191,12 @@ function ActivationModal({ krakenBalance, portfolio, bots, onActivate, onClose }
 
 // ── Active Panel ──────────────────────────────────────────────────────────────
 function ActivePanel({ capital, pnl, trades, bots, onStop, totalUSD }) {
+  const { data: openTrades = [] } = useQuery({
+    queryKey: ["openTrades"],
+    queryFn: () => base44.entities.Trade.filter({ status: "open" }),
+    refetchInterval: 10000,
+  });
+
   const [elapsed, setElapsed] = useState(0);
   const [stopping, setStopping] = useState(false);
 
@@ -202,7 +208,6 @@ function ActivePanel({ capital, pnl, trades, bots, onStop, totalUSD }) {
   const hh = String(Math.floor(elapsed / 3600)).padStart(2, "0");
   const mm = String(Math.floor((elapsed % 3600) / 60)).padStart(2, "0");
   const ss = String(elapsed % 60).padStart(2, "0");
-
   const handleStop = () => { setStopping(true); setTimeout(() => onStop(elapsed), 2500); };
   const pnlPct = capital > 0 ? (pnl / capital) * 100 : 0;
   const isPositive = pnl >= 0;
@@ -249,6 +254,31 @@ function ActivePanel({ capital, pnl, trades, bots, onStop, totalUSD }) {
           </div>
         ))}
       </div>
+
+      {/* Open trades */}
+      {openTrades.length > 0 && (
+        <div className="mb-4">
+          <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-2">Operaciones abiertas ({openTrades.length})</p>
+          <div className="space-y-1.5">
+            {openTrades.map(t => {
+              const isLong = t.side === "buy";
+              return (
+                <div key={t.id} className="flex items-center justify-between bg-muted/40 rounded-lg px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <span className={cn("text-[10px] font-bold uppercase", isLong ? "text-primary" : "text-destructive")}>{t.side}</span>
+                    <span className="text-xs font-mono text-foreground">{t.pair}</span>
+                    <span className="text-[10px] text-muted-foreground">{t.bot_name}</span>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-xs font-mono text-foreground">${t.entry_price?.toLocaleString('en-US', {maximumFractionDigits: 2})}</p>
+                    <p className="text-[10px] text-muted-foreground">TP: ${t.take_profit?.toFixed(2)} · SL: ${t.stop_loss?.toFixed(2)}</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {stopping ? (
         <div className="bg-chart-3/10 border border-chart-3/20 rounded-xl p-3 text-center">
