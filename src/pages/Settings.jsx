@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import RiskProfileSelector from "../components/RiskProfileSelector";
 import { Settings as SettingsIcon, Eye, EyeOff, Save, ExternalLink, ShieldCheck, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -170,6 +171,12 @@ export default function SettingsPage() {
       <div className="bg-card rounded-xl border border-border p-5">
         <h3 className="text-sm font-semibold text-foreground mb-2">OpenAI (Próximamente)</h3>
         <p className="text-xs text-muted-foreground">Integración con GPT para análisis avanzado de sentimiento y predicciones de mercado. Disponible en próxima actualización.</p>
+      </div>
+
+      <div className="bg-card rounded-xl border border-border p-5">
+        <h3 className="text-sm font-semibold text-foreground mb-1">Perfil de Riesgo</h3>
+        <p className="text-xs text-muted-foreground mb-4">Ajusta el comportamiento de todos los bots simultáneamente. Conservador (4 bots), Balanceado (5 bots), Agresivo (6 bots).</p>
+        <RiskProfileSelector />
       </div>
 
       <Button onClick={handleSave} className="bg-primary hover:bg-primary/90 gap-2">

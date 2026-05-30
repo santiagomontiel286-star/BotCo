@@ -1,4 +1,6 @@
 import { Link, useLocation } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { base44 } from "@/api/base44Client";
 import { LayoutDashboard, Cpu, TrendingUp, Brain, Shield, Clock, Wallet, Settings, Bell, X, Activity, Archive } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -15,8 +17,18 @@ const navItems = [
   { path: "/settings", label: "Ajustes", icon: Settings },
 ];
 
+const PROFILE_LABELS = { conservador: "Modo Conservador", balanceado: "Modo Balanceado", agresivo: "Modo Agresivo" };
+
 export default function Sidebar({ open, onClose }) {
   const location = useLocation();
+  const { data: sessions = [] } = useQuery({
+    queryKey: ["activeBotSession"],
+    queryFn: () => base44.entities.BotSession.filter({ active: true }),
+    refetchInterval: 15000,
+  });
+  const session = sessions[0];
+  const profileLabel = PROFILE_LABELS[session?.risk_profile] || "Modo Conservador";
+  const isActive = session?.active;
 
   return (
     <>
@@ -66,10 +78,10 @@ export default function Sidebar({ open, onClose }) {
 
         <div className="p-4 mx-3 mb-4 rounded-lg bg-primary/5 border border-primary/10">
           <div className="flex items-center gap-2 mb-1">
-            <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
-            <span className="text-xs font-medium text-primary">Sistema Activo</span>
+            <div className={`w-2 h-2 rounded-full ${isActive ? 'bg-primary animate-pulse' : 'bg-muted-foreground'}`} />
+            <span className="text-xs font-medium text-primary">{isActive ? "Sistema Activo" : "Sistema Inactivo"}</span>
           </div>
-          <p className="text-[11px] text-muted-foreground">Modo conservador habilitado</p>
+          <p className="text-[11px] text-muted-foreground">{profileLabel}</p>
         </div>
       </aside>
     </>

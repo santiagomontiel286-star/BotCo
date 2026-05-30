@@ -1,7 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { base44 } from "@/api/base44Client";
 import { DollarSign, TrendingUp, Percent, Shield, Wallet, RefreshCw, TrendingDown } from "lucide-react";
-import RiskProfileSelector from "../components/RiskProfileSelector";
 import useKrakenData from "../hooks/useKrakenData";
 import StatCard from "../components/StatCard";
 import BotCard from "../components/BotCard";
@@ -38,7 +37,6 @@ export default function Dashboard() {
           <h2 className="text-2xl font-bold text-foreground tracking-tight">Dashboard</h2>
           <p className="text-sm text-muted-foreground mt-1">Centro de control</p>
         </div>
-        <RiskProfileSelector />
         <button onClick={fetchKrakenBalance} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
           <RefreshCw className={cn("w-3.5 h-3.5", loadingKraken && "animate-spin")} />
           Actualizar Kraken
