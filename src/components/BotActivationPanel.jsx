@@ -190,7 +190,7 @@ function ActivationModal({ krakenBalance, portfolio, bots, onActivate, onClose }
 }
 
 // ── Active Panel ──────────────────────────────────────────────────────────────
-function ActivePanel({ capital, pnl, trades, bots, onStop, totalUSD, mode }) {
+function ActivePanel({ capital, pnl, trades, bots, onStop, totalUSD, mode, startedAt }) {
   const { data: openTrades = [] } = useQuery({
     queryKey: ["openTrades", mode],
     queryFn: () => base44.entities.Trade.filter({ status: "open", mode }),
@@ -201,9 +201,14 @@ function ActivePanel({ capital, pnl, trades, bots, onStop, totalUSD, mode }) {
   const [stopping, setStopping] = useState(false);
 
   useEffect(() => {
-    const t = setInterval(() => setElapsed(e => e + 1), 1000);
+    const updateElapsed = () => {
+      const startTime = startedAt ? new Date(startedAt).getTime() : Date.now();
+      setElapsed(Math.max(0, Math.floor((Date.now() - startTime) / 1000)));
+    };
+    updateElapsed();
+    const t = setInterval(updateElapsed, 1000);
     return () => clearInterval(t);
-  }, []);
+  }, [startedAt]);
 
   const hh = String(Math.floor(elapsed / 3600)).padStart(2, "0");
   const mm = String(Math.floor((elapsed % 3600) / 60)).padStart(2, "0");
@@ -298,10 +303,10 @@ function ActivePanel({ capital, pnl, trades, bots, onStop, totalUSD, mode }) {
 // ── Main Component ────────────────────────────────────────────────────────────
 export default function BotActivationPanel() {
   const { portfolio, totalUSD, balance: krakenBalances, loading: loadingBalance, error: balanceError, refresh: fetchBalance } = useKrakenData({ intervalMs: 30000 });
-  const { active, assignedCapital, initialBalance, sessionMode, activate, deactivate } = useBotSession();
+  const { active, assignedCapital, initialBalance, sessionMode, startedAt, activate, deactivate } = useBotSession();
   const [modalOpen, setModalOpen] = useState(false);
   const [reportData, setReportData] = useState(null);
-  const [sessionStart] = useState(new Date().toISOString());
+  const sessionStart = sessions[0]?.started_at || (startedAt ? new Date(startedAt).toISOString() : new Date().toISOString());
   const [trades, setTrades] = useState(0);
   const [mode, setMode] = useState("real");
   const [demoCapital] = useState(10000);
@@ -360,6 +365,7 @@ export default function BotActivationPanel() {
           onStop={handleStop}
           totalUSD={totalUSD}
           mode={activeMode}
+          startedAt={sessions[0]?.started_at || startedAt}
         />
       ) : (
         <div className="bg-card border border-border rounded-2xl p-5">

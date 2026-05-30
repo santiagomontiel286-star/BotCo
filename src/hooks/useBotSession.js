@@ -21,6 +21,7 @@ export default function useBotSession() {
   const [assignedCapital, setAssignedCapital] = useState(saved?.assignedCapital || 0);
   const [initialBalance, setInitialBalance] = useState(saved?.initialBalance || 0);
   const [sessionMode, setSessionMode] = useState(saved?.mode || "real");
+  const [startedAt, setStartedAt] = useState(saved?.startedAt || null);
 
   // Hydrate from DB on mount — recovers state after browser close
   useEffect(() => {
@@ -30,11 +31,12 @@ export default function useBotSession() {
         setActive(true);
         setAssignedCapital(s.assigned_capital || 0);
         setSessionMode(s.mode || "real");
+        setStartedAt(new Date(s.started_at || s.created_date).getTime());
         const prev = load();
         sessionStorage.setItem(KEY, JSON.stringify({
           active: true,
           assignedCapital: s.assigned_capital,
-          startedAt: prev?.startedAt || new Date(s.started_at).getTime(),
+          startedAt: new Date(s.started_at || s.created_date).getTime(),
           initialBalance: prev?.initialBalance || s.assigned_capital || 0,
           mode: s.mode || "real",
         }));
@@ -50,6 +52,7 @@ export default function useBotSession() {
     setAssignedCapital(amount);
     setInitialBalance(krakenBalance);
     setSessionMode(mode);
+    setStartedAt(session.startedAt);
     try {
       const existing = await base44.entities.BotSession.filter({ active: true });
       for (const s of existing) await base44.entities.BotSession.update(s.id, { active: false });
@@ -71,6 +74,7 @@ export default function useBotSession() {
     sessionStorage.removeItem(KEY);
     setActive(false);
     setAssignedCapital(0);
+    setStartedAt(null);
     // Stop backend engine
     try {
       const existing = await base44.entities.BotSession.filter({ active: true });
@@ -80,5 +84,5 @@ export default function useBotSession() {
     }
   };
 
-  return { active, assignedCapital, initialBalance, sessionMode, activate, deactivate };
+  return { active, assignedCapital, initialBalance, sessionMode, startedAt, activate, deactivate };
 }
