@@ -29,12 +29,9 @@ export default function Layout() {
             <Menu className="w-5 h-5" />
           </button>
           <div className="flex items-center gap-3 ml-auto">
-            <div className={`flex flex-col items-center px-3 py-1.5 rounded-full border ${isDemo ? 'bg-chart-3/10 border-chart-3/30' : 'bg-primary/10 border-primary/20'}`}>
-              <div className="flex items-center gap-1.5">
-                <div className={`w-1.5 h-1.5 rounded-full animate-pulse ${isDemo ? 'bg-chart-3' : 'bg-primary'}`} />
-                <span className={`text-xs font-mono font-medium ${isDemo ? 'text-chart-3' : 'text-primary'}`}>LIVE</span>
-              </div>
-              {isDemo && <span className="text-[9px] font-mono font-bold text-chart-3 leading-tight">DEMO</span>}
+            <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border ${isDemo ? 'bg-chart-3/10 border-chart-3/30' : 'bg-primary/10 border-primary/20'}`}>
+              <div className={`w-1.5 h-1.5 rounded-full animate-pulse ${isDemo ? 'bg-chart-3' : 'bg-primary'}`} />
+              <span className={`text-xs font-mono font-medium ${isDemo ? 'text-chart-3' : 'text-primary'}`}>{isDemo ? 'DEMO' : 'LIVE'}</span>
             </div>
           </div>
         </header>
