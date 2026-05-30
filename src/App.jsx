@@ -13,6 +13,7 @@ import Register from './pages/Register';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
 import Dashboard from './pages/Dashboard';
+import Operate from './pages/Operate';
 import Bots from './pages/Bots';
 import Market from './pages/Market';
 import AIAnalysis from './pages/AIAnalysis';
@@ -58,6 +59,7 @@ const AuthenticatedApp = () => {
       <Route element={<ProtectedRoute unauthenticatedElement={<Navigate to="/login" replace />} />}>
         <Route element={<Layout />}>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/operar" element={<Operate />} />
           <Route path="/bots" element={<Bots />} />
           <Route path="/market" element={<Market />} />
           <Route path="/ai" element={<AIAnalysis />} />

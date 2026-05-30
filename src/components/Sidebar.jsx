@@ -3,7 +3,6 @@ import { Link, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { base44 } from "@/api/base44Client";
 import { LayoutDashboard, Cpu, TrendingUp, Brain, Shield, Clock, Wallet, Settings, Bell, X, Activity, Archive, ChevronRight, BarChart3 } from "lucide-react";
-import OperateButton from "./OperateButton";
 import { cn } from "@/lib/utils";
 
 const navItems = [
@@ -89,10 +88,6 @@ export default function Sidebar({ open, onClose }) {
         </div>
 
         <nav className="flex-1 px-3 py-2 space-y-1">
-          <div className="mb-2">
-            <OperateButton variant="nav" />
-          </div>
-
           {navItems.map(item => {
             const active = location.pathname === item.path;
             return (
