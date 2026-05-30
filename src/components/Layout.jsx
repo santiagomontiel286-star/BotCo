@@ -1,4 +1,5 @@
 import { useState } from "react";
+import DemoBanner from "./DemoBanner";
 import { Outlet } from "react-router-dom";
 import { Menu } from "lucide-react";
 import Sidebar from "./Sidebar";
@@ -11,6 +12,7 @@ export default function Layout() {
       <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
       
       <div className="lg:pl-64">
+        <DemoBanner />
         <header className="sticky top-0 z-30 bg-background/80 backdrop-blur-xl border-b border-border px-4 py-3 lg:px-6 flex items-center justify-between">
           <button
             onClick={() => setSidebarOpen(true)}

@@ -20,6 +20,7 @@ export default function useBotSession() {
   const [active, setActive] = useState(saved?.active || false);
   const [assignedCapital, setAssignedCapital] = useState(saved?.assignedCapital || 0);
   const [initialBalance, setInitialBalance] = useState(saved?.initialBalance || 0);
+  const [sessionMode, setSessionMode] = useState(saved?.mode || "real");
 
   // Hydrate from DB on mount — recovers state after browser close
   useEffect(() => {
@@ -39,21 +40,22 @@ export default function useBotSession() {
     }).catch(() => {});
   }, []);
 
-  const activate = async (amount, krakenBalance = 0) => {
-    const session = { active: true, assignedCapital: amount, startedAt: Date.now(), initialBalance: krakenBalance };
+  const activate = async (amount, krakenBalance = 0, mode = "real") => {
+    const session = { active: true, assignedCapital: amount, startedAt: Date.now(), initialBalance: krakenBalance, mode };
     sessionStorage.setItem(KEY, JSON.stringify(session));
     setActive(true);
     setAssignedCapital(amount);
     setInitialBalance(krakenBalance);
-    // Create backend session so the engine can trade
+    setSessionMode(mode);
     try {
-      // Clear any stale sessions first
       const existing = await base44.entities.BotSession.filter({ active: true });
       for (const s of existing) await base44.entities.BotSession.update(s.id, { active: false });
       await base44.entities.BotSession.create({
         active: true,
         assigned_capital: amount,
         started_at: new Date().toISOString(),
+        mode: mode,
+        risk_profile: "conservador",
         total_trades: 0,
         total_pnl: 0,
       });
@@ -75,5 +77,5 @@ export default function useBotSession() {
     }
   };
 
-  return { active, assignedCapital, initialBalance, activate, deactivate };
+  return { active, assignedCapital, initialBalance, sessionMode, activate, deactivate };
 }

@@ -250,6 +250,9 @@ export default function BotActivationPanel() {
   const [sessionStart] = useState(new Date().toISOString());
   const [trades, setTrades] = useState(0);
   const krakenBalance = totalUSD;
+  const [mode, setMode] = useState("real");
+  const [demoCapital] = useState(10000);
+  const effectiveBalance = mode === "demo" ? demoCapital : krakenBalance;
 
   // Real PnL = current Kraken balance minus balance at session start
   const pnl = active && initialBalance > 0 ? parseFloat((totalUSD - initialBalance).toFixed(2)) : 0;
@@ -267,7 +270,7 @@ export default function BotActivationPanel() {
   }, [active]);
 
   const handleActivate = async (amount) => {
-    await activate(amount, totalUSD);
+    await activate(amount, totalUSD, mode);
     setTrades(0);
     setModalOpen(false);
   };
@@ -282,25 +285,32 @@ export default function BotActivationPanel() {
         <ActivePanel capital={assignedCapital} pnl={pnl} trades={trades} onStop={handleStop} totalUSD={totalUSD} />
       ) : (
         <div className="bg-card border border-border rounded-2xl p-5 gap-4">
+          {/* Mode selector */}
+          <div className="flex gap-1 bg-muted/50 rounded-lg p-1 border border-border w-fit mb-4">
+            <button onClick={() => setMode("real")} className={cn("px-4 py-1.5 text-xs font-semibold rounded-md transition-colors", mode === "real" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>🔴 Real</button>
+            <button onClick={() => setMode("demo")} className={cn("px-4 py-1.5 text-xs font-semibold rounded-md transition-colors", mode === "demo" ? "bg-chart-3/20 text-chart-3 shadow-sm" : "text-muted-foreground hover:text-foreground")}>🎮 Demo</button>
+          </div>
           <div className="flex items-start justify-between flex-wrap gap-3 mb-3">
             <div className="flex-1">
-              <h3 className="font-semibold text-foreground mb-0.5">Operación con capital real</h3>
+              <h3 className="font-semibold text-foreground mb-0.5">{mode === "demo" ? "Modo Demo — Capital Simulado" : "Operación con capital real"}</h3>
               <p className="text-xs text-muted-foreground">
-                Portfolio total Kraken:{" "}
-                {loadingBalance
-                  ? <span className="animate-pulse">Conectando...</span>
-                  : balanceError
-                    ? <span className="text-destructive">{balanceError}</span>
-                    : <strong className="text-foreground">${krakenBalance.toLocaleString('en-US', { maximumFractionDigits: 2 })} USD</strong>
+                {mode === "demo" ? "Capital demo:" : "Portfolio total Kraken:"}{" "}
+                {mode === "demo"
+                  ? <strong className="text-chart-3">${demoCapital.toLocaleString('en-US')} USD (simulado)</strong>
+                  : loadingBalance
+                    ? <span className="animate-pulse">Conectando...</span>
+                    : balanceError
+                      ? <span className="text-destructive">{balanceError}</span>
+                      : <strong className="text-foreground">${krakenBalance.toLocaleString('en-US', { maximumFractionDigits: 2 })} USD</strong>
                 }
               </p>
-              <p className="text-[11px] text-muted-foreground mt-0.5">Los bots operarán 24/7 hasta que ordenes la parada inteligente</p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">{mode === "demo" ? "Las órdenes se simulan — no se opera con dinero real" : "Los bots operarán 24/7 hasta que ordenes la parada inteligente"}</p>
             </div>
             <div className="flex items-center gap-2">
               <Button onClick={fetchBalance} variant="ghost" size="icon" disabled={loadingBalance} className="shrink-0">
                 <RefreshCw className={cn("w-4 h-4", loadingBalance && "animate-spin")} />
               </Button>
-              <Button onClick={() => setModalOpen(true)} className="gap-2" disabled={loadingBalance || !!balanceError || krakenBalance <= 0}>
+              <Button onClick={() => setModalOpen(true)} className="gap-2" disabled={mode === "real" && (loadingBalance || !!balanceError || krakenBalance <= 0)}>
                 <Rocket className="w-4 h-4" /> Activar bots
               </Button>
             </div>
@@ -361,7 +371,7 @@ export default function BotActivationPanel() {
 
       {modalOpen && (
         <ActivationModal
-          krakenBalance={krakenBalance}
+          krakenBalance={effectiveBalance}
           portfolio={portfolio}
           onActivate={handleActivate}
           onClose={() => setModalOpen(false)}

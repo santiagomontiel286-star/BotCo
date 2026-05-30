@@ -1,4 +1,5 @@
 import { useState } from "react";
+import RiskProfileSelector from "../components/RiskProfileSelector";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { base44 } from "@/api/base44Client";
 import BotCard from "../components/BotCard";
@@ -36,8 +37,10 @@ export default function Bots() {
       <div className="flex items-end justify-between">
         <div>
           <h2 className="text-2xl font-bold text-foreground tracking-tight">Control de Bots</h2>
-          <p className="text-sm text-muted-foreground mt-1">4 bots independientes — gestión conservadora de riesgo</p>
+          <p className="text-sm text-muted-foreground mt-1">Hasta 6 bots independientes según perfil de riesgo</p>
         </div>
+        <div className="flex items-center gap-3 flex-wrap">
+          <RiskProfileSelector />
         <div className="flex gap-1 bg-muted/50 rounded-lg p-1 border border-border">
           <button
             onClick={() => setActiveTab("bots")}
@@ -51,6 +54,7 @@ export default function Bots() {
               activeTab === "operar" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>
             Operar
           </button>
+        </div>
         </div>
       </div>
 

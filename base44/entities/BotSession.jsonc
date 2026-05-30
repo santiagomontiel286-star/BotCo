@@ -13,16 +13,31 @@
     "started_at": {
       "type": "string"
     },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "real",
+        "demo"
+      ],
+      "default": "real"
+    },
+    "risk_profile": {
+      "type": "string",
+      "enum": [
+        "conservador",
+        "balanceado",
+        "agresivo"
+      ],
+      "default": "conservador"
+    },
     "pairs": {
       "type": "array",
       "items": {
         "type": "string"
       },
       "default": [
-        "XBTUSD",
-        "ETHUSD",
-        "SOLUSD",
-        "XRPUSD"
+        "XBTEUR",
+        "ETHEUR"
       ]
     },
     "total_pnl": {
