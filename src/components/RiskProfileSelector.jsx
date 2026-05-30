@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { base44 } from "@/api/base44Client";
 import { cn } from "@/lib/utils";
@@ -30,8 +31,15 @@ const PROFILES = [
   },
 ];
 
+const PROFILE_KEY = "botco_risk_profile";
+
+export function getSavedProfile() {
+  return localStorage.getItem(PROFILE_KEY) || "conservador";
+}
+
 export default function RiskProfileSelector() {
   const queryClient = useQueryClient();
+  const [localProfile, setLocalProfile] = useState(getSavedProfile());
 
   const { data: sessions = [] } = useQuery({
     queryKey: ["activeBotSession"],
@@ -39,7 +47,8 @@ export default function RiskProfileSelector() {
   });
 
   const activeSession = sessions[0];
-  const currentProfile = activeSession?.risk_profile || "conservador";
+  // DB value takes priority if session exists, otherwise use localStorage
+  const currentProfile = activeSession?.risk_profile || localProfile;
 
   const updateProfile = useMutation({
     mutationFn: ({ profile }) => {
@@ -48,6 +57,14 @@ export default function RiskProfileSelector() {
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["activeBotSession"] }),
   });
+
+  const handleSelect = (profile) => {
+    // Always save to localStorage (works with or without active session)
+    localStorage.setItem(PROFILE_KEY, profile);
+    setLocalProfile(profile);
+    // Also update DB if session exists
+    updateProfile.mutate({ profile });
+  };
 
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -58,7 +75,7 @@ export default function RiskProfileSelector() {
         return (
           <button
             key={p.key}
-            onClick={() => updateProfile.mutate({ profile: p.key })}
+            onClick={() => handleSelect(p.key)}
             title={p.desc}
             className={cn(
               "flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all",

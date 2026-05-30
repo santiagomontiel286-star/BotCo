@@ -41,6 +41,7 @@ export default function useBotSession() {
   }, []);
 
   const activate = async (amount, krakenBalance = 0, mode = "real") => {
+    const savedProfile = localStorage.getItem("botco_risk_profile") || "conservador";
     const session = { active: true, assignedCapital: amount, startedAt: Date.now(), initialBalance: krakenBalance, mode };
     sessionStorage.setItem(KEY, JSON.stringify(session));
     setActive(true);
@@ -55,7 +56,7 @@ export default function useBotSession() {
         assigned_capital: amount,
         started_at: new Date().toISOString(),
         mode: mode,
-        risk_profile: "conservador",
+        risk_profile: savedProfile,
         total_trades: 0,
         total_pnl: 0,
       });

@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { TrendingUp, RotateCcw, Brain, Shield, Zap, BarChart2, X, AlertTriangle, Rocket, Square, RefreshCw } from "lucide-react";
 import LiveTradingChart from "./LiveTradingChart";
 import SessionReportModal from "./SessionReportModal";
+import { getSavedProfile } from "./RiskProfileSelector";
 
 const fmt = (n) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(n);
@@ -281,7 +282,7 @@ export default function BotActivationPanel() {
     queryFn: () => base44.entities.BotSession.filter({ active: true }),
     refetchInterval: 15000,
   });
-  const currentProfile = sessions[0]?.risk_profile || "conservador";
+  const currentProfile = sessions[0]?.risk_profile || getSavedProfile();
   const activeBots = buildBots(currentProfile);
 
   const krakenBalance = totalUSD;
