@@ -6,7 +6,7 @@ import { X, Zap } from "lucide-react";
 import BotActivationPanel from "./BotActivationPanel";
 import { cn } from "@/lib/utils";
 
-export default function OperateButton() {
+export default function OperateButton({ variant = "button" }) {
   const [open, setOpen] = useState(false);
   const { data: sessions = [] } = useQuery({
     queryKey: ["activeBotSession"],
@@ -20,10 +20,23 @@ export default function OperateButton() {
     <>
       <Button
         onClick={() => setOpen(true)}
-        size="lg"
-        className={cn("gap-2 text-white shadow-lg", isDemo ? "bg-accent hover:bg-accent/90" : "bg-primary hover:bg-primary/90")}
+        size={variant === "nav" ? "default" : "lg"}
+        className={cn(
+          "gap-2 text-white",
+          variant === "nav"
+            ? "w-full justify-start rounded-lg shadow-none px-3 py-2.5 text-sm font-medium"
+            : "shadow-lg",
+          isDemo ? "bg-accent hover:bg-accent/90" : "bg-primary hover:bg-primary/90"
+        )}
       >
-        {isDemo ? "🔵 OPERAR (DEMO)" : <><Zap className="w-4 h-4" /> OPERAR</>}
+        {isDemo ? (
+          "🔵 OPERAR (DEMO)"
+        ) : (
+          <>
+            <Zap className="w-4 h-4" />
+            OPERAR
+          </>
+        )}
       </Button>
 
       {open && (

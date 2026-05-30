@@ -1,14 +1,10 @@
-import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { base44 } from "@/api/base44Client";
 import BotCard from "../components/BotCard";
-import BotActivationPanel from "../components/BotActivationPanel";
 import useKrakenData from "../hooks/useKrakenData";
 import { toast } from "sonner";
-import { cn } from "@/lib/utils";
 
 export default function Bots() {
-  const [activeTab, setActiveTab] = useState("bots");
   const queryClient = useQueryClient();
   const { data: bots = [], isLoading } = useQuery({ queryKey: ["bots"], queryFn: () => base44.entities.Bot.list() });
   const { totalUSD, trades: krakenTrades } = useKrakenData({ intervalMs: 60000 });
@@ -32,34 +28,12 @@ export default function Bots() {
 
   return (
     <div className="space-y-6">
-      {/* Header + tabs */}
-      <div className="flex items-end justify-between">
-        <div>
-          <h2 className="text-2xl font-bold text-foreground tracking-tight">Control de Bots</h2>
-          <p className="text-sm text-muted-foreground mt-1">Hasta 6 bots independientes según perfil de riesgo</p>
-        </div>
-        <div className="flex gap-1 bg-muted/50 rounded-lg p-1 border border-border">
-          <button
-            onClick={() => setActiveTab("bots")}
-            className={cn("px-4 py-1.5 text-xs font-semibold rounded-md transition-colors",
-              activeTab === "bots" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>
-            Bots
-          </button>
-          <button
-            onClick={() => setActiveTab("operar")}
-            className={cn("px-4 py-1.5 text-xs font-semibold rounded-md transition-colors",
-              activeTab === "operar" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>
-            Operar
-          </button>
-        </div>
+      <div>
+        <h2 className="text-2xl font-bold text-foreground tracking-tight">Control de Bots</h2>
+        <p className="text-sm text-muted-foreground mt-1">Hasta 6 bots independientes según perfil de riesgo</p>
       </div>
 
-      {/* Tab: Operar */}
-      {activeTab === "operar" && <BotActivationPanel />}
-
-      {/* Tab: Bots */}
-      {activeTab === "bots" && (
-        <>
+      <>
           <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-4">
             {bots.map(bot => (
               <BotCard key={bot.id} bot={bot} onStart={handleStart} onPause={handlePause} onStop={handleStop} totalKrakenUSD={totalUSD} krakenTrades={krakenTrades} />
@@ -90,8 +64,7 @@ export default function Bots() {
               </div>
             </div>
           </div>
-        </>
-      )}
+      </>
     </div>
   );
 }
