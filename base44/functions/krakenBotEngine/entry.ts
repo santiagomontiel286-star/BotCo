@@ -18,15 +18,15 @@ const MIN_VOL     = { XBTEUR: 0.0002, ETHEUR: 0.002 };
 // ── Risk profiles ──────────────────────────────────────────────────────────────
 const PROFILES = {
   conservador: {
-    TP: 0.010, SL: 0.006, maxHours: 1, minScore: 40,
+    TP: 0.004, SL: 0.006, maxHours: 4, minScore: 28, earlyTP: 0.0025,
     strategies: ["trend", "rsi", "momentum_ai", "breakout_risk"],
   },
   balanceado: {
-    TP: 0.015, SL: 0.009, maxHours: 2, minScore: 50,
+    TP: 0.006, SL: 0.008, maxHours: 4, minScore: 32, earlyTP: 0.0035,
     strategies: ["trend", "rsi", "momentum_ai", "breakout_risk", "momentum"],
   },
   agresivo: {
-    TP: 0.025, SL: 0.012, maxHours: 3, minScore: 35,
+    TP: 0.009, SL: 0.010, maxHours: 5, minScore: 30, earlyTP: 0.0045,
     strategies: ["trend", "rsi", "momentum_ai", "breakout_risk", "momentum", "breakout"],
   },
 };
@@ -183,24 +183,33 @@ function scoreSignal(closes, direction) {
 
   // RSI in favorable zone (+20)
   const r = rsi(closes, 14);
-  if (direction === "buy"  && r < 60 && r > 20) score += 20;
-  if (direction === "sell" && r > 40 && r < 80) score += 20;
+  if (direction === "buy"  && r < 68 && r > 18) score += 20;
+  if (direction === "sell" && r > 32 && r < 82) score += 20;
 
-  // EMA50 macro alignment (+25)
+  // EMA50 macro alignment (+20)
   if (n >= 50) {
     const e50       = ema(closes, 50);
     const aboveEMA  = closes[n-1] > e50[n-1];
-    if (direction === "buy"  && aboveEMA)  score += 25;
-    if (direction === "sell" && !aboveEMA) score += 25;
+    if (direction === "buy"  && aboveEMA)  score += 20;
+    if (direction === "sell" && !aboveEMA) score += 20;
   }
 
-  // 3-candle momentum confirmation (+25)
+  // Short momentum confirmation (+30)
   const recent     = closes.slice(-3);
   const isBullish  = recent[2] > recent[0];
-  if (direction === "buy"  && isBullish)  score += 25;
-  if (direction === "sell" && !isBullish) score += 25;
+  if (direction === "buy"  && isBullish)  score += 30;
+  if (direction === "sell" && !isBullish) score += 30;
 
   return Math.min(score, 100);
+}
+
+function getFallbackDirection(closes) {
+  const n = closes.length;
+  if (n < 8) return "hold";
+  const shortMove = (closes[n - 1] - closes[n - 4]) / closes[n - 4];
+  const mediumMove = (closes[n - 1] - closes[n - 8]) / closes[n - 8];
+  if (shortMove > 0.0012 && mediumMove > 0) return "buy";
+  return "hold";
 }
 
 // ── Demo price simulation ──────────────────────────────────────────────────────
@@ -252,7 +261,7 @@ Deno.serve(async (req) => {
 
     // Active bots for this profile
     const activeBots = ALL_BOTS.filter(b => profile.strategies.includes(b.strategy));
-    const { TP, SL, maxHours, minScore } = profile;
+    const { TP, SL, maxHours, minScore, earlyTP } = profile;
     const log = [];
     log.push({ sessionMode, profileKey, activeBots: activeBots.map(b => b.name) });
 
@@ -274,12 +283,14 @@ Deno.serve(async (req) => {
       const ageHours = (Date.now() - new Date(trade.entry_date || trade.created_date).getTime()) / 3600000;
       const isLong   = trade.side === "buy";
       const pricePct = (price - trade.entry_price) / trade.entry_price;
-      const hitTP    = isLong ? pricePct >=  TP : pricePct <= -TP;
-      const hitSL    = isLong ? pricePct <= -SL : pricePct >=  SL;
-      const stale    = ageHours >= maxHours;
+      const profitPct = pricePct * (isLong ? 1 : -1);
+      const hitTP     = profitPct >= TP;
+      const hitEarly  = ageHours >= 0.5 && profitPct >= earlyTP;
+      const hitSL     = profitPct <= -SL;
+      const staleWin  = ageHours >= maxHours && profitPct > 0;
 
-      if (hitTP || hitSL || stale) {
-        const reason    = hitTP ? "take_profit" : hitSL ? "stop_loss" : "timeout";
+      if (hitTP || hitEarly || hitSL || staleWin) {
+        const reason    = hitTP ? "take_profit" : hitEarly ? "early_profit" : hitSL ? "stop_loss" : "timeout_profit";
         const closeType = isLong ? "sell" : "buy";
         const minVol    = MIN_VOL[krakenPair] || 0;
         let   placed    = false;
@@ -302,7 +313,7 @@ Deno.serve(async (req) => {
           exit_price: exitPrice,
           exit_date: new Date().toISOString(),
           profit_loss: parseFloat(pnl.toFixed(4)),
-          profit_loss_percent: parseFloat((pricePct * 100 * (isLong ? 1 : -1)).toFixed(2)),
+          profit_loss_percent: parseFloat((profitPct * 100).toFixed(2)),
           notes: `[${sessionMode.toUpperCase()}·${profileKey}] Closed: ${reason}${placed ? " ✓" : " (skipped)"}`,
         });
 
@@ -359,13 +370,16 @@ Deno.serve(async (req) => {
       const votes     = activeBots.map(b => ({ bot: b.name, vote: getVote(b.strategy, closes) }));
       const buyVotes  = votes.filter(v => v.vote === "buy").map(v => v.bot);
       const sellVotes = votes.filter(v => v.vote === "sell").map(v => v.bot);
+      const fallbackDirection = getFallbackDirection(closes);
 
-      log.push({ pair: PAIR_LABELS[pair], votes });
+      log.push({ pair: PAIR_LABELS[pair], votes, fallbackDirection });
 
-      if (buyVotes.length === 0) {
+      if (buyVotes.length === 0 && fallbackDirection !== "buy") {
         log.push({ pair: PAIR_LABELS[pair], status: "hold", sell: sellVotes.length });
         continue;
       }
+
+      if (buyVotes.length === 0) buyVotes.push("Momentum Bot");
 
       // Score the signal
       const score = scoreSignal(closes, "buy");
