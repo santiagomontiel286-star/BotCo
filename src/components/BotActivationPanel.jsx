@@ -466,7 +466,7 @@ export default function BotActivationPanel() {
         </div>
       </div>
 
-      <LiveTradingChart active={active} capital={assignedCapital} />
+      <LiveTradingChart active={active} capital={assignedCapital} mode={activeMode} startedAt={sessions[0]?.started_at || startedAt} />
 
       {modalOpen && (
         <ActivationModal

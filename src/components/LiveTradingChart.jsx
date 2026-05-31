@@ -36,7 +36,7 @@ const CustomTooltip = ({ active, payload }) => {
   );
 };
 
-export default function LiveTradingChart({ active, capital }) {
+export default function LiveTradingChart({ active, capital, mode = "real", startedAt }) {
   const [selectedPair, setSelectedPair] = useState("BTC/USD");
   const [priceData, setPriceData] = useState(() => {
     const base = 67000;
@@ -47,8 +47,8 @@ export default function LiveTradingChart({ active, capital }) {
   const lastPrice = useRef(67000);
 
   const { data: trades = [] } = useQuery({
-    queryKey: ["trades-live"],
-    queryFn: () => base44.entities.Trade.list("-created_date", 5),
+    queryKey: ["trades-live", mode],
+    queryFn: () => base44.entities.Trade.filter({ mode }, "-created_date", 20),
     refetchInterval: active ? 8000 : false,
   });
 
@@ -95,6 +95,10 @@ export default function LiveTradingChart({ active, capital }) {
   const priceUp = currentPrice >= prevPrice;
   const openSignals = signals.filter(s => s.status === "open");
   const pendingSignals = signals.filter(s => s.status === "pending");
+  const sessionStartMs = startedAt ? new Date(startedAt).getTime() : 0;
+  const closedDbTrades = trades
+    .filter(t => t.status === "closed")
+    .filter(t => !sessionStartMs || new Date(t.entry_date || t.created_date).getTime() >= sessionStartMs - 60000);
 
   return (
     <div className="space-y-4">
@@ -223,14 +227,14 @@ export default function LiveTradingChart({ active, capital }) {
             <span className="text-sm font-semibold text-foreground">Operaciones Cerradas</span>
           </div>
 
-          {closedTrades.length === 0 && !active && (
+          {closedDbTrades.length === 0 && !active && (
             <div className="text-center py-8">
               <Target className="w-6 h-6 text-muted-foreground mx-auto mb-2" />
               <p className="text-xs text-muted-foreground">Las operaciones completadas aparecerán aquí</p>
             </div>
           )}
 
-          {active && closedTrades.length === 0 && (
+          {active && closedDbTrades.length === 0 && (
             <div className="text-center py-8">
               <Clock className="w-6 h-6 text-muted-foreground mx-auto mb-2 animate-pulse" />
               <p className="text-xs text-muted-foreground">Esperando el cierre de la primera operación...</p>
@@ -238,34 +242,37 @@ export default function LiveTradingChart({ active, capital }) {
           )}
 
           <div className="space-y-2">
-            {closedTrades.map((t, i) => (
-              <div key={i} className={cn("flex items-center justify-between rounded-lg p-2.5 border", t.pnl >= 0 ? "bg-primary/5 border-primary/20" : "bg-destructive/5 border-destructive/20")}>
-                <div className="flex items-center gap-2">
-                  <div className={cn("w-1.5 h-1.5 rounded-full", t.pnl >= 0 ? "bg-primary" : "bg-destructive")} />
-                  <div>
-                    <span className="text-xs font-bold text-foreground">{t.pair}</span>
-                    <p className="text-[10px] text-muted-foreground">{t.closedAt} · {t.side === "buy" ? "LONG" : "SHORT"}</p>
+            {closedDbTrades.map((t) => {
+              const pnl = t.profit_loss || 0;
+              return (
+                <div key={t.id} className={cn("flex items-center justify-between rounded-lg p-2.5 border", pnl >= 0 ? "bg-primary/5 border-primary/20" : "bg-destructive/5 border-destructive/20")}>
+                  <div className="flex items-center gap-2">
+                    <div className={cn("w-1.5 h-1.5 rounded-full", pnl >= 0 ? "bg-primary" : "bg-destructive")} />
+                    <div>
+                      <span className="text-xs font-bold text-foreground">{t.pair}</span>
+                      <p className="text-[10px] text-muted-foreground">{new Date(t.exit_date || t.updated_date).toLocaleTimeString("es-ES")} · {t.side === "buy" ? "LONG" : "SHORT"} · {mode.toUpperCase()}</p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <p className={cn("text-xs font-mono font-bold", pnl >= 0 ? "text-primary" : "text-destructive")}>
+                      {pnl >= 0 ? "+" : ""}{pnl.toFixed(4)} {mode === "real" ? "EUR" : "USD"}
+                    </p>
+                    <p className="text-[10px] text-muted-foreground">
+                      {t.profit_loss_percent >= 0 ? "+" : ""}{(t.profit_loss_percent || 0).toFixed(3)}%
+                    </p>
                   </div>
                 </div>
-                <div className="text-right">
-                  <p className={cn("text-xs font-mono font-bold", t.pnl >= 0 ? "text-primary" : "text-destructive")}>
-                    {t.pnl >= 0 ? "+" : ""}{t.pnl?.toFixed(2)} USD
-                  </p>
-                  <p className="text-[10px] text-muted-foreground">
-                    {t.pnl >= 0 ? "+" : ""}{((t.pnl / (capital || 1)) * 100).toFixed(3)}%
-                  </p>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* Summary if any closed */}
-          {closedTrades.length > 0 && (
+          {closedDbTrades.length > 0 && (
             <div className="mt-3 pt-3 border-t border-border flex justify-between text-xs">
               <span className="text-muted-foreground">P&amp;L acumulado sesión</span>
-              <span className={cn("font-mono font-bold", closedTrades.reduce((s, t) => s + t.pnl, 0) >= 0 ? "text-primary" : "text-destructive")}>
-                {closedTrades.reduce((s, t) => s + t.pnl, 0) >= 0 ? "+" : ""}
-                {closedTrades.reduce((s, t) => s + t.pnl, 0).toFixed(2)} USD
+              <span className={cn("font-mono font-bold", closedDbTrades.reduce((s, t) => s + (t.profit_loss || 0), 0) >= 0 ? "text-primary" : "text-destructive")}>
+                {closedDbTrades.reduce((s, t) => s + (t.profit_loss || 0), 0) >= 0 ? "+" : ""}
+                {closedDbTrades.reduce((s, t) => s + (t.profit_loss || 0), 0).toFixed(4)} {mode === "real" ? "EUR" : "USD"}
               </span>
             </div>
           )}
