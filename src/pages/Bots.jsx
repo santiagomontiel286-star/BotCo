@@ -14,9 +14,29 @@ export default function Bots() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["bots"] }),
   });
 
-  const handleStart = (id) => { updateBot.mutate({ id, data: { status: "active" } }); toast.success("Bot iniciado"); };
+  const handleStart = (bot) => {
+    if (bot.trading_mode === "live") {
+      const confirmed = window.confirm("Vas a activar un bot en LIVE. Solo operará si KRAKEN_LIVE_TRADING=true y respeta MAX_ORDER_USD. ¿Confirmas?");
+      if (!confirmed) return;
+      updateBot.mutate({ id: bot.id, data: { status: "active", live_enabled: true } });
+      toast.warning("Bot LIVE activado con confirmación");
+      return;
+    }
+    updateBot.mutate({ id: bot.id, data: { status: "active", trading_mode: "demo", live_enabled: false } });
+    toast.success("Bot DEMO iniciado");
+  };
   const handlePause = (id) => { updateBot.mutate({ id, data: { status: "paused" } }); toast.info("Bot pausado"); };
-  const handleStop  = (id) => { updateBot.mutate({ id, data: { status: "stopped" } }); toast.error("Bot detenido"); };
+  const handleStop  = (id) => { updateBot.mutate({ id, data: { status: "stopped", live_enabled: false } }); toast.error("Bot detenido"); };
+  const handleModeChange = (bot, trading_mode) => {
+    const data = trading_mode === "demo" ? { trading_mode, live_enabled: false } : { trading_mode, live_enabled: false };
+    updateBot.mutate({ id: bot.id, data });
+    toast.info(trading_mode === "demo" ? "Modo DEMO seleccionado" : "Modo LIVE seleccionado; requiere confirmación al iniciar");
+  };
+  const handleTradingTick = async () => {
+    const response = await base44.functions.invoke("tradingTick", {});
+    queryClient.invalidateQueries({ queryKey: ["bots"] });
+    toast.success(`Ciclo ejecutado: ${response.data.activeBots} bots activos`);
+  };
 
   if (isLoading) {
     return (
@@ -28,15 +48,20 @@ export default function Bots() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold text-foreground tracking-tight">Control de Bots</h2>
-        <p className="text-sm text-muted-foreground mt-1">Hasta 6 bots independientes según perfil de riesgo</p>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="text-2xl font-bold text-foreground tracking-tight">Control de Bots</h2>
+          <p className="text-sm text-muted-foreground mt-1">Modo por defecto DEMO. LIVE requiere confirmación y variables de entorno.</p>
+        </div>
+        <button onClick={handleTradingTick} className="px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-colors">
+          Ejecutar ciclo trading
+        </button>
       </div>
 
       <>
           <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-4">
             {bots.map(bot => (
-              <BotCard key={bot.id} bot={bot} onStart={handleStart} onPause={handlePause} onStop={handleStop} totalKrakenUSD={totalUSD} krakenTrades={krakenTrades} />
+              <BotCard key={bot.id} bot={bot} onStart={handleStart} onPause={handlePause} onStop={handleStop} onModeChange={handleModeChange} totalKrakenUSD={totalUSD} krakenTrades={krakenTrades} />
             ))}
           </div>
 

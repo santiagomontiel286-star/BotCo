@@ -23,6 +23,41 @@
       ],
       "default": "stopped"
     },
+    "exchange": {
+      "type": "string",
+      "enum": [
+        "kraken"
+      ],
+      "default": "kraken"
+    },
+    "trading_mode": {
+      "type": "string",
+      "enum": [
+        "demo",
+        "live"
+      ],
+      "default": "demo"
+    },
+    "live_enabled": {
+      "type": "boolean",
+      "default": false
+    },
+    "strategy": {
+      "type": "string",
+      "enum": [
+        "ema_cross",
+        "mean_reversion"
+      ],
+      "default": "ema_cross"
+    },
+    "timeframe": {
+      "type": "number",
+      "default": 15
+    },
+    "max_order_usd": {
+      "type": "number",
+      "default": 25
+    },
     "capital": {
       "type": "number",
       "default": 0
@@ -79,6 +114,15 @@
     "consecutive_loss_pause": {
       "type": "number",
       "default": 3
+    },
+    "last_run_at": {
+      "type": "string"
+    },
+    "last_signal": {
+      "type": "string"
+    },
+    "last_error": {
+      "type": "string"
     },
     "icon_color": {
       "type": "string"

@@ -2,14 +2,22 @@
   "name": "Trade",
   "type": "object",
   "properties": {
+    "exchange": {
+      "type": "string",
+      "enum": [
+        "kraken"
+      ],
+      "default": "kraken"
+    },
     "mode": {
       "type": "string",
       "enum": [
-        "real",
-        "demo"
+        "demo",
+        "live",
+        "real"
       ],
-      "default": "real",
-      "description": "Separates real Kraken trades from simulated demo trades"
+      "default": "demo",
+      "description": "demo for paper trading, live for real Kraken orders; real is kept for old records"
     },
     "bot_name": {
       "type": "string"
@@ -57,6 +65,22 @@
       "type": "string"
     },
     "exit_date": {
+      "type": "string"
+    },
+    "exchange_order_id": {
+      "type": "string"
+    },
+    "signal_reason": {
+      "type": "string"
+    },
+    "confidence": {
+      "type": "number"
+    },
+    "fees": {
+      "type": "number",
+      "default": 0
+    },
+    "raw_response": {
       "type": "string"
     },
     "notes": {

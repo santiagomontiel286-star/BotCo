@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { base44 } from "@/api/base44Client";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine } from "recharts";
@@ -6,25 +6,14 @@ import { cn } from "@/lib/utils";
 import { TrendingUp, TrendingDown, Zap, Clock, Target, Activity } from "lucide-react";
 
 const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD", "BTC/EUR", "ETH/EUR"];
-
-function generateCandle(base, idx) {
-  const noise = (Math.random() - 0.48) * base * 0.008;
-  return {
-    t: idx,
-    price: parseFloat((base + noise).toFixed(2)),
-    time: new Date(Date.now() - (59 - idx) * 5000).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-  };
-}
-
-function generateSignal(capital) {
-  const pair = PAIRS[Math.floor(Math.random() * PAIRS.length)];
-  const side = Math.random() > 0.5 ? "buy" : "sell";
-  const price = pair.startsWith("BTC") ? 67000 + Math.random() * 3000 : pair.startsWith("ETH") ? 3500 + Math.random() * 500 : 150 + Math.random() * 50;
-  const size = parseFloat(((capital * 0.01) / price).toFixed(6));
-  const tp = parseFloat((price * (side === "buy" ? 1.015 : 0.985)).toFixed(2));
-  const sl = parseFloat((price * (side === "buy" ? 0.990 : 1.010)).toFixed(2));
-  return { pair, side, price: parseFloat(price.toFixed(2)), size, tp, sl, confidence: Math.floor(65 + Math.random() * 30), status: "pending", id: Date.now() + Math.random() };
-}
+const KRAKEN_PAIRS = {
+  "BTC/USD": "XBTUSD",
+  "ETH/USD": "ETHUSD",
+  "SOL/USD": "SOLUSD",
+  "XRP/USD": "XRPUSD",
+  "BTC/EUR": "XBTEUR",
+  "ETH/EUR": "ETHEUR",
+};
 
 const CustomTooltip = ({ active, payload }) => {
   if (!active || !payload?.length) return null;
@@ -36,15 +25,9 @@ const CustomTooltip = ({ active, payload }) => {
   );
 };
 
-export default function LiveTradingChart({ active, capital, mode = "real", startedAt }) {
+export default function LiveTradingChart({ active, mode = "real", startedAt }) {
   const [selectedPair, setSelectedPair] = useState("BTC/USD");
-  const [priceData, setPriceData] = useState(() => {
-    const base = 67000;
-    return Array.from({ length: 60 }, (_, i) => generateCandle(base, i));
-  });
-  const [signals, setSignals] = useState([]);
-  const [closedTrades, setClosedTrades] = useState([]);
-  const lastPrice = useRef(67000);
+  const [priceData, setPriceData] = useState([]);
 
   const { data: trades = [] } = useQuery({
     queryKey: ["trades-live", mode],
@@ -52,57 +35,55 @@ export default function LiveTradingChart({ active, capital, mode = "real", start
     refetchInterval: active ? 8000 : false,
   });
 
-  // Update price chart
-  useEffect(() => {
-    if (!active) return;
-    const t = setInterval(() => {
-      const noise = (Math.random() - 0.47) * lastPrice.current * 0.005;
-      lastPrice.current = parseFloat((lastPrice.current + noise).toFixed(2));
-      setPriceData(prev => {
-        const next = [...prev.slice(1), {
-          t: prev[prev.length - 1].t + 1,
-          price: lastPrice.current,
-          time: new Date().toLocaleTimeString("es-ES"),
-        }];
-        return next;
+  const { data: candles = [] } = useQuery({
+    queryKey: ["kraken-ohlc-monitor", selectedPair],
+    queryFn: async () => {
+      const response = await base44.functions.invoke("krakenOHLC", {
+        pair: KRAKEN_PAIRS[selectedPair],
+        interval: 15,
       });
-    }, 2000);
-    return () => clearInterval(t);
-  }, [active]);
 
-  // Generate AI signals
+      return (response.data.candles || []).map((c, index) => ({
+        t: index,
+        price: c.close,
+        time: new Date(c.t).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }),
+      }));
+    },
+    refetchInterval: active ? 30000 : 60000,
+    initialData: [],
+  });
+
   useEffect(() => {
-    if (!active || !capital) return;
-    const t = setInterval(() => {
-      const sig = generateSignal(capital);
-      setSignals(prev => [sig, ...prev].slice(0, 6));
-      // After 8s, "execute" the signal
-      setTimeout(() => {
-        setSignals(prev => prev.map(s => s.id === sig.id ? { ...s, status: "open" } : s));
-        // After 20s more, "close"
-        setTimeout(() => {
-          const pnl = parseFloat(((Math.random() - 0.4) * capital * 0.015).toFixed(2));
-          setClosedTrades(prev => [{ ...sig, status: "closed", pnl, closedAt: new Date().toLocaleTimeString("es-ES") }, ...prev].slice(0, 8));
-          setSignals(prev => prev.filter(s => s.id !== sig.id));
-        }, 20000);
-      }, 8000);
-    }, 12000);
-    return () => clearInterval(t);
-  }, [active, capital]);
+    setPriceData(candles);
+  }, [candles]);
 
   const currentPrice = priceData[priceData.length - 1]?.price || 0;
   const prevPrice = priceData[priceData.length - 2]?.price || currentPrice;
+  const firstPrice = priceData[0]?.price || currentPrice;
   const priceUp = currentPrice >= prevPrice;
-  const openSignals = signals.filter(s => s.status === "open");
-  const pendingSignals = signals.filter(s => s.status === "pending");
+  const priceChangePct = firstPrice ? ((currentPrice - firstPrice) / firstPrice) * 100 : 0;
   const sessionStartMs = startedAt ? new Date(startedAt).getTime() : 0;
+
+  const openSignals = trades
+    .filter(t => t.status === "open")
+    .map(t => ({
+      id: t.id,
+      pair: t.pair,
+      side: t.side,
+      price: t.entry_price,
+      tp: t.take_profit,
+      sl: t.stop_loss,
+    }));
+
   const closedDbTrades = trades
     .filter(t => t.status === "closed")
     .filter(t => !sessionStartMs || new Date(t.entry_date || t.created_date).getTime() >= sessionStartMs - 60000);
 
+  const currency = mode === "live" || mode === "real" ? "EUR" : "USD";
+  const sessionPnl = closedDbTrades.reduce((sum, trade) => sum + (trade.profit_loss || 0), 0);
+
   return (
     <div className="space-y-4">
-      {/* Chart header */}
       <div className="bg-card border border-border rounded-xl p-4">
         <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
           <div className="flex items-center gap-3">
@@ -110,117 +91,101 @@ export default function LiveTradingChart({ active, capital, mode = "real", start
             <span className="text-sm font-semibold text-foreground">Monitor de Precio en Vivo</span>
           </div>
           <div className="flex gap-1.5 flex-wrap">
-            {PAIRS.map(p => (
-              <button key={p} onClick={() => setSelectedPair(p)}
-                className={cn("px-2.5 py-1 text-[10px] font-semibold rounded-md transition-colors border",
-                  selectedPair === p ? "bg-primary/20 border-primary/40 text-primary" : "border-border text-muted-foreground hover:text-foreground")}>
-                {p}
+            {PAIRS.map(pair => (
+              <button
+                key={pair}
+                onClick={() => setSelectedPair(pair)}
+                className={cn(
+                  "px-2.5 py-1 text-[10px] font-semibold rounded-md transition-colors border",
+                  selectedPair === pair
+                    ? "bg-primary/20 border-primary/40 text-primary"
+                    : "border-border text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {pair}
               </button>
             ))}
           </div>
         </div>
 
-        {/* Price display */}
         <div className="flex items-baseline gap-3 mb-4">
           <span className={cn("text-3xl font-mono font-bold", priceUp ? "text-primary" : "text-destructive")}>
             ${currentPrice.toLocaleString()}
           </span>
           <span className={cn("text-sm font-mono flex items-center gap-1", priceUp ? "text-primary" : "text-destructive")}>
             {priceUp ? <TrendingUp className="w-3.5 h-3.5" /> : <TrendingDown className="w-3.5 h-3.5" />}
-            {priceUp ? "+" : ""}{((currentPrice - priceData[0]?.price) / priceData[0]?.price * 100).toFixed(2)}%
+            {priceChangePct >= 0 ? "+" : ""}{priceChangePct.toFixed(2)}%
           </span>
           {active && <span className="text-[10px] text-muted-foreground bg-primary/10 px-2 py-0.5 rounded-full">EN VIVO</span>}
         </div>
 
-        {/* Chart */}
         <div className="h-48">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={priceData} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="hsl(224,20%,15%)" />
-              <XAxis dataKey="time" tick={{ fill: "hsl(215,15%,45%)", fontSize: 9 }} axisLine={false} tickLine={false} interval={11} />
-              <YAxis tick={{ fill: "hsl(215,15%,45%)", fontSize: 9 }} axisLine={false} tickLine={false} domain={["dataMin - 200", "dataMax + 200"]} width={65} tickFormatter={v => `$${v.toLocaleString()}`} />
-              <Tooltip content={<CustomTooltip />} />
-              {openSignals.map(s => (
-                <ReferenceLine key={s.id} y={s.price} stroke={s.side === "buy" ? "hsl(160,59%,40%)" : "hsl(0,70%,55%)"} strokeDasharray="4 2" strokeWidth={1.5} />
-              ))}
-              <Line type="monotone" dataKey="price" stroke={priceUp ? "hsl(160,59%,40%)" : "hsl(0,70%,55%)"} strokeWidth={2} dot={false} isAnimationActive={false} />
-            </LineChart>
-          </ResponsiveContainer>
+          {priceData.length === 0 ? (
+            <div className="flex items-center justify-center h-full text-xs text-muted-foreground">
+              Cargando velas reales de Kraken...
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={priceData} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="hsl(224,20%,15%)" />
+                <XAxis dataKey="time" tick={{ fill: "hsl(215,15%,45%)", fontSize: 9 }} axisLine={false} tickLine={false} interval={11} />
+                <YAxis tick={{ fill: "hsl(215,15%,45%)", fontSize: 9 }} axisLine={false} tickLine={false} domain={["dataMin - 200", "dataMax + 200"]} width={65} tickFormatter={value => `$${value.toLocaleString()}`} />
+                <Tooltip content={<CustomTooltip />} />
+                {openSignals.map(signal => (
+                  <ReferenceLine key={signal.id} y={signal.price} stroke={signal.side === "buy" ? "hsl(160,59%,40%)" : "hsl(0,70%,55%)"} strokeDasharray="4 2" strokeWidth={1.5} />
+                ))}
+                <Line type="monotone" dataKey="price" stroke={priceUp ? "hsl(160,59%,40%)" : "hsl(0,70%,55%)"} strokeWidth={2} dot={false} isAnimationActive={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
         </div>
       </div>
 
       <div className="grid lg:grid-cols-2 gap-4">
-        {/* Active & Pending signals */}
         <div className="bg-card border border-border rounded-xl p-4">
           <div className="flex items-center gap-2 mb-3">
             <Activity className="w-4 h-4 text-primary" />
-            <span className="text-sm font-semibold text-foreground">Señales IA en Curso</span>
-            {active && <span className="text-[10px] bg-primary/10 text-primary px-2 py-0.5 rounded-full">{signals.length} activas</span>}
+            <span className="text-sm font-semibold text-foreground">Operaciones en Curso</span>
+            {active && <span className="text-[10px] bg-primary/10 text-primary px-2 py-0.5 rounded-full">{openSignals.length} abiertas</span>}
           </div>
 
           {!active && (
             <div className="text-center py-8">
               <Zap className="w-6 h-6 text-muted-foreground mx-auto mb-2" />
-              <p className="text-xs text-muted-foreground">Activa los bots para ver señales en tiempo real</p>
+              <p className="text-xs text-muted-foreground">Activa los bots para ver operaciones reales o demo</p>
             </div>
           )}
 
-          {active && signals.length === 0 && (
+          {active && openSignals.length === 0 && (
             <div className="text-center py-8">
               <Clock className="w-6 h-6 text-muted-foreground mx-auto mb-2 animate-pulse" />
-              <p className="text-xs text-muted-foreground">Analizando mercado... La primera señal llegará pronto</p>
+              <p className="text-xs text-muted-foreground">Analizando mercado real de Kraken...</p>
             </div>
           )}
 
           <div className="space-y-2">
-            {pendingSignals.map(s => (
-              <div key={s.id} className="flex items-center justify-between bg-chart-3/5 border border-chart-3/20 rounded-lg p-2.5">
-                <div className="flex items-center gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-chart-3 animate-pulse" />
-                  <div>
-                    <span className="text-xs font-bold text-foreground">{s.pair}</span>
-                    <p className="text-[10px] text-muted-foreground">Evaluando entrada... {s.confidence}% conf.</p>
-                  </div>
-                </div>
-                <span className={cn("text-[10px] font-bold px-2 py-0.5 rounded-full", s.side === "buy" ? "bg-primary/20 text-primary" : "bg-destructive/20 text-destructive")}>
-                  {s.side === "buy" ? "LONG" : "SHORT"}
-                </span>
-              </div>
-            ))}
-            {openSignals.map(s => (
-              <div key={s.id} className="flex items-center justify-between bg-primary/5 border border-primary/20 rounded-lg p-2.5">
+            {openSignals.map(signal => (
+              <div key={signal.id} className="flex items-center justify-between bg-primary/5 border border-primary/20 rounded-lg p-2.5">
                 <div className="flex items-center gap-2">
                   <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
                   <div>
-                    <span className="text-xs font-bold text-foreground">{s.pair}</span>
-                    <p className="text-[10px] text-muted-foreground">${s.price.toLocaleString()} · TP: ${s.tp} · SL: ${s.sl}</p>
+                    <span className="text-xs font-bold text-foreground">{signal.pair}</span>
+                    <p className="text-[10px] text-muted-foreground">
+                      ${signal.price?.toLocaleString()} {signal.tp ? `· TP: ${signal.tp}` : ""} {signal.sl ? `· SL: ${signal.sl}` : ""}
+                    </p>
                   </div>
                 </div>
                 <div className="text-right">
-                  <span className={cn("text-[10px] font-bold px-2 py-0.5 rounded-full", s.side === "buy" ? "bg-primary/20 text-primary" : "bg-destructive/20 text-destructive")}>
-                    {s.side === "buy" ? "LONG" : "SHORT"}
+                  <span className={cn("text-[10px] font-bold px-2 py-0.5 rounded-full", signal.side === "buy" ? "bg-primary/20 text-primary" : "bg-destructive/20 text-destructive")}>
+                    {signal.side === "buy" ? "LONG" : "SHORT"}
                   </span>
                   <p className="text-[10px] text-primary mt-0.5">ABIERTA</p>
                 </div>
               </div>
             ))}
           </div>
-
-          {/* Recent DB trades */}
-          {trades.filter(t => t.status === "open").slice(0, 3).map(t => (
-            <div key={t.id} className="flex items-center justify-between bg-muted/30 border border-border/50 rounded-lg p-2.5 mt-2">
-              <div>
-                <span className="text-xs font-bold text-foreground">{t.pair}</span>
-                <p className="text-[10px] text-muted-foreground">{t.bot_name} · ${t.entry_price?.toLocaleString()}</p>
-              </div>
-              <span className={cn("text-[10px] font-bold px-2 py-0.5 rounded-full", t.side === "buy" ? "bg-primary/20 text-primary" : "bg-destructive/20 text-destructive")}>
-                {t.side?.toUpperCase()}
-              </span>
-            </div>
-          ))}
         </div>
 
-        {/* Closed trades feed */}
         <div className="bg-card border border-border rounded-xl p-4">
           <div className="flex items-center gap-2 mb-3">
             <Target className="w-4 h-4 text-accent" />
@@ -242,23 +207,25 @@ export default function LiveTradingChart({ active, capital, mode = "real", start
           )}
 
           <div className="space-y-2">
-            {closedDbTrades.map((t) => {
-              const pnl = t.profit_loss || 0;
+            {closedDbTrades.map(trade => {
+              const pnl = trade.profit_loss || 0;
               return (
-                <div key={t.id} className={cn("flex items-center justify-between rounded-lg p-2.5 border", pnl >= 0 ? "bg-primary/5 border-primary/20" : "bg-destructive/5 border-destructive/20")}>
+                <div key={trade.id} className={cn("flex items-center justify-between rounded-lg p-2.5 border", pnl >= 0 ? "bg-primary/5 border-primary/20" : "bg-destructive/5 border-destructive/20")}>
                   <div className="flex items-center gap-2">
                     <div className={cn("w-1.5 h-1.5 rounded-full", pnl >= 0 ? "bg-primary" : "bg-destructive")} />
                     <div>
-                      <span className="text-xs font-bold text-foreground">{t.pair}</span>
-                      <p className="text-[10px] text-muted-foreground">{new Date(t.exit_date || t.updated_date).toLocaleTimeString("es-ES")} · {t.side === "buy" ? "LONG" : "SHORT"} · {mode.toUpperCase()}</p>
+                      <span className="text-xs font-bold text-foreground">{trade.pair}</span>
+                      <p className="text-[10px] text-muted-foreground">
+                        {new Date(trade.exit_date || trade.updated_date).toLocaleTimeString("es-ES")} · {trade.side === "buy" ? "LONG" : "SHORT"} · {mode.toUpperCase()}
+                      </p>
                     </div>
                   </div>
                   <div className="text-right">
                     <p className={cn("text-xs font-mono font-bold", pnl >= 0 ? "text-primary" : "text-destructive")}>
-                      {pnl >= 0 ? "+" : ""}{pnl.toFixed(4)} {mode === "real" ? "EUR" : "USD"}
+                      {pnl >= 0 ? "+" : ""}{pnl.toFixed(4)} {currency}
                     </p>
                     <p className="text-[10px] text-muted-foreground">
-                      {t.profit_loss_percent >= 0 ? "+" : ""}{(t.profit_loss_percent || 0).toFixed(3)}%
+                      {(trade.profit_loss_percent || 0) >= 0 ? "+" : ""}{(trade.profit_loss_percent || 0).toFixed(3)}%
                     </p>
                   </div>
                 </div>
@@ -266,13 +233,11 @@ export default function LiveTradingChart({ active, capital, mode = "real", start
             })}
           </div>
 
-          {/* Summary if any closed */}
           {closedDbTrades.length > 0 && (
             <div className="mt-3 pt-3 border-t border-border flex justify-between text-xs">
               <span className="text-muted-foreground">P&amp;L acumulado sesión</span>
-              <span className={cn("font-mono font-bold", closedDbTrades.reduce((s, t) => s + (t.profit_loss || 0), 0) >= 0 ? "text-primary" : "text-destructive")}>
-                {closedDbTrades.reduce((s, t) => s + (t.profit_loss || 0), 0) >= 0 ? "+" : ""}
-                {closedDbTrades.reduce((s, t) => s + (t.profit_loss || 0), 0).toFixed(4)} {mode === "real" ? "EUR" : "USD"}
+              <span className={cn("font-mono font-bold", sessionPnl >= 0 ? "text-primary" : "text-destructive")}>
+                {sessionPnl >= 0 ? "+" : ""}{sessionPnl.toFixed(4)} {currency}
               </span>
             </div>
           )}

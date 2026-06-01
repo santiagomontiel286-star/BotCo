@@ -22,7 +22,7 @@ const TYPE_ALLOC = {
   risk_guardian: 15,
 };
 
-export default function BotCard({ bot, onStart, onPause, onStop, compact, totalKrakenUSD = 0, krakenTrades = [] }) {
+export default function BotCard({ bot, onStart, onPause, onStop, onModeChange, compact, totalKrakenUSD = 0, krakenTrades = [] }) {
   const isActive = bot.status === "active";
   const alloc = TYPE_ALLOC[bot.type] || 0;
   // Use real Kraken-derived capital when available, else entity value
@@ -73,6 +73,21 @@ export default function BotCard({ bot, onStart, onPause, onStop, compact, totalK
         </span>
       </div>
 
+      <div className="flex gap-1 bg-muted/40 rounded-lg p-1 border border-border mb-4">
+        <button
+          onClick={() => onModeChange?.(bot, "demo")}
+          className={cn("flex-1 px-2 py-1.5 rounded-md text-[11px] font-semibold transition-colors", (bot.trading_mode || "demo") === "demo" ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground")}
+        >
+          DEMO
+        </button>
+        <button
+          onClick={() => onModeChange?.(bot, "live")}
+          className={cn("flex-1 px-2 py-1.5 rounded-md text-[11px] font-semibold transition-colors", bot.trading_mode === "live" ? "bg-destructive/15 text-destructive" : "text-muted-foreground hover:text-foreground")}
+        >
+          LIVE
+        </button>
+      </div>
+
       <div className="grid grid-cols-2 gap-3 mb-4 text-xs">
         <div>
           <span className="text-muted-foreground">Capital (Kraken)</span>
@@ -101,12 +116,27 @@ export default function BotCard({ bot, onStart, onPause, onStop, compact, totalK
           <span className="text-muted-foreground">Drawdown</span>
           <p className="font-mono font-semibold text-loss">{bot.max_drawdown?.toFixed(1)}%</p>
         </div>
+        <div>
+          <span className="text-muted-foreground">Estrategia</span>
+          <p className="font-mono font-semibold text-foreground">{bot.strategy || "ema_cross"}</p>
+        </div>
+        <div>
+          <span className="text-muted-foreground">Máx orden</span>
+          <p className="font-mono font-semibold text-foreground">${bot.max_order_usd || 25}</p>
+        </div>
       </div>
+
+      {(bot.last_signal || bot.last_error) && (
+        <div className="mb-4 rounded-lg border border-border bg-muted/30 p-3 text-xs">
+          {bot.last_signal && <p className="text-muted-foreground">Señal: <span className="text-foreground">{bot.last_signal}</span></p>}
+          {bot.last_error && <p className="text-destructive mt-1">Error: {bot.last_error}</p>}
+        </div>
+      )}
 
       <div className="flex gap-2">
         {bot.status !== "active" ? (
-          <Button size="sm" className="flex-1 bg-primary hover:bg-primary/90 text-primary-foreground gap-1.5" onClick={() => onStart?.(bot.id)}>
-            <Play className="w-3.5 h-3.5" /> Iniciar
+          <Button size="sm" className="flex-1 bg-primary hover:bg-primary/90 text-primary-foreground gap-1.5" onClick={() => onStart?.(bot)}>
+            <Play className="w-3.5 h-3.5" /> Iniciar {(bot.trading_mode || "demo").toUpperCase()}
           </Button>
         ) : (
           <Button size="sm" variant="outline" className="flex-1 border-chart-3/30 text-chart-3 hover:bg-chart-3/10 gap-1.5" onClick={() => onPause?.(bot.id)}>
