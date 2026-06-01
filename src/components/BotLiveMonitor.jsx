@@ -48,6 +48,7 @@ export default function BotLiveMonitor() {
   const { data: bots = [] } = useQuery({ queryKey: ["bots"], queryFn: () => base44.entities.Bot.list(), refetchInterval: REFRESH_MS });
   const { data: trades = [] } = useQuery({ queryKey: ["monitor-trades"], queryFn: () => base44.entities.Trade.list("-created_date", 20), refetchInterval: REFRESH_MS });
   const { data: alerts = [] } = useQuery({ queryKey: ["monitor-alerts"], queryFn: () => base44.entities.Alert.list("-created_date", 10), refetchInterval: REFRESH_MS });
+  const { data: signals = [] } = useQuery({ queryKey: ["monitor-signals"], queryFn: () => base44.entities.Signal.list("-created_date", 20), refetchInterval: REFRESH_MS });
   const { data: sessions = [] } = useQuery({ queryKey: ["botSessionsLive"], queryFn: () => base44.entities.BotSession.filter({ active: true }), refetchInterval: REFRESH_MS });
   const { data: health } = useQuery({
     queryKey: ["liveEnvStatus"],
@@ -65,6 +66,11 @@ export default function BotLiveMonitor() {
   const blockedBots = bots.filter(bot => `${bot.last_signal || ""} ${bot.last_error || ""}`.toLowerCase().match(/skip|bloqueado|capital inferior|volumen|mínimo/));
   const openTrades = trades.filter(trade => trade.status === "open");
   const latestTrade = trades[0];
+  const latestSignal = signals[0];
+  const newSignals = signals.filter(signal => signal.status === "new");
+  const rejectedSignals = signals.filter(signal => signal.status === "rejected");
+  const executedSignals = signals.filter(signal => signal.status === "executed");
+  const searchingBots = activeBots.filter(bot => !blockedBots.some(blocked => blocked.id === bot.id));
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const dayPnl = trades
@@ -78,6 +84,9 @@ export default function BotLiveMonitor() {
     const rows = [];
     if (lastTick) rows.push({ date: lastTick, type: "tick ejecutado", tone: cronStale ? "warning" : "ok", text: `Tick ${relativeMinutes(lastTick)}` });
     alerts.forEach(alert => rows.push({ date: alert.created_date, type: alert.title || "evento", tone: alert.severity === "critical" ? "error" : alert.severity === "warning" ? "warning" : "ok", text: alert.message || alert.title }));
+    signals.slice(0, 8).forEach(signal => {
+      rows.push({ date: signal.updated_date || signal.created_date, type: `señal ${signal.status}`, tone: signal.status === "executed" ? "ok" : signal.status === "rejected" || signal.status === "expired" ? "warning" : "ok", text: `${signal.bot_name} ${signal.side} ${signal.pair} · ${signal.reason || "sin motivo"}` });
+    });
     trades.forEach(trade => {
       if (trade.status === "open") rows.push({ date: trade.entry_date || trade.created_date, type: "operación abierta", tone: "ok", text: `${trade.bot_name} ${trade.pair} · ${trade.exchange_order_id || "sin id"}` });
       if (trade.status === "closed") rows.push({ date: trade.exit_date || trade.updated_date, type: "operación cerrada", tone: Number(trade.profit_loss || 0) >= 0 ? "ok" : "warning", text: `${trade.bot_name} PnL ${Number(trade.profit_loss || 0).toFixed(6)}` });
@@ -87,7 +96,7 @@ export default function BotLiveMonitor() {
       else if (bot.last_signal) rows.push({ date: bot.last_run_at || bot.updated_date, type: signalLabel(bot.last_signal), tone: bot.last_signal.toLowerCase().includes("skip") || bot.last_signal.toLowerCase().includes("bloqueado") ? "warning" : "ok", text: `${bot.name}: ${signalLabel(bot.last_signal)}` });
     });
     return rows.filter(item => item.date).sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 10);
-  }, [alerts, bots, trades, lastTick, cronStale]);
+  }, [alerts, bots, trades, signals, lastTick, cronStale]);
 
   const toggleOpen = () => {
     const next = !open;
@@ -124,8 +133,8 @@ export default function BotLiveMonitor() {
           <div className="max-h-[calc(72vh-52px)] lg:max-h-[calc(100vh-162px)] overflow-y-auto p-4 space-y-4">
             <section className="grid grid-cols-2 gap-2 text-xs">
               <div className="rounded-xl bg-muted/35 border border-border/40 p-3"><p className="text-muted-foreground">Sistema</p><p className={cn("font-semibold", healthStatus === "error" ? "text-destructive" : healthStatus === "warning" ? "text-chart-3" : "text-primary")}>{cronStale ? "Sin cron" : activeBots.length ? "Operando" : "Detenido"}</p></div>
-              <div className="rounded-xl bg-muted/35 border border-border/40 p-3"><p className="text-muted-foreground">Último tick</p><p className="font-mono text-foreground">{fmtTime(lastTick)}</p></div>
-              <div className="rounded-xl bg-muted/35 border border-border/40 p-3"><p className="text-muted-foreground">Próximo tick</p><p className="font-mono text-foreground">{fmtTime(nextTick)}</p></div>
+              <div className="rounded-xl bg-muted/35 border border-border/40 p-3"><p className="text-muted-foreground">Scanner tick</p><p className="font-mono text-foreground">{fmtTime(latestSignal?.created_date)}</p></div>
+              <div className="rounded-xl bg-muted/35 border border-border/40 p-3"><p className="text-muted-foreground">Execution tick</p><p className="font-mono text-foreground">{fmtTime(lastTick)}</p></div>
               <div className="rounded-xl bg-muted/35 border border-border/40 p-3"><p className="text-muted-foreground">Health</p><p className="font-semibold text-foreground">{health?.ok ? "OK" : "Error"}</p></div>
             </section>
 
@@ -139,9 +148,28 @@ export default function BotLiveMonitor() {
                 <Metric label="Ops abiertas" value={openTrades.length} />
                 <Metric label="Capital Kraken" value={loadingKraken ? "…" : `$${Number(totalUSD || 0).toFixed(2)}`} />
                 <Metric label="PnL día" value={`${dayPnl >= 0 ? "+" : ""}${dayPnl.toFixed(6)}`} tone={dayPnl < 0 ? "error" : "ok"} />
-                <Metric label="Última op" value={latestTrade ? latestTrade.status : "—"} />
+                <Metric label="Señales nuevas" value={newSignals.length} tone={newSignals.length ? "ok" : "default"} />
+                <Metric label="Rechazadas" value={rejectedSignals.length} tone={rejectedSignals.length ? "warning" : "default"} />
+                <Metric label="Ejecutadas" value={executedSignals.length} tone={executedSignals.length ? "ok" : "default"} />
+                <Metric label="Buscando" value={searchingBots.length} />
               </div>
             </section>
+
+            {signals.length > 0 && (
+              <section className="space-y-2">
+                <div className="text-xs font-semibold text-foreground">Signal Bus</div>
+                {signals.slice(0, 5).map(signal => (
+                  <div key={signal.id} className="rounded-xl border border-border/45 bg-muted/25 p-3 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-foreground truncate">{signal.bot_name}</span>
+                      <Badge tone={signal.status === "executed" ? "ok" : signal.status === "rejected" || signal.status === "expired" ? "error" : "default"}>{signal.status}</Badge>
+                    </div>
+                    <p className="mt-1 font-mono text-[10px] text-primary">{signal.side} · {signal.pair} · score {Number(signal.score || 0).toFixed(0)} · conf {Number(signal.confidence || 0).toFixed(2)}</p>
+                    <p className="mt-1 text-[10px] text-muted-foreground line-clamp-2">{signal.reason || "Sin motivo"}</p>
+                  </div>
+                ))}
+              </section>
+            )}
 
             {openTrades.length > 0 && (
               <section className="space-y-2">

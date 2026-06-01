@@ -360,7 +360,7 @@ async function createAlert(entities, title, message, severity = 'info') {
 async function safeBotUpdate(entities, botId, data) {
   if (!botId) return;
   try {
-    await safeBotUpdate(entities, botId, data);
+    await entities.Bot.update(botId, data);
   } catch (error) {
     console.log(`Bot update skipped: ${error.message}`);
   }
@@ -394,6 +394,36 @@ async function updateSession(entities, session, data) {
   }
 }
 
+async function getFreshSignals(entities) {
+  const now = Date.now();
+  const signals = await entities.Signal.filter({ status: 'new' }, '-created_date', 100);
+  const fresh = [];
+  for (const signal of signals) {
+    if (signal.expires_at && new Date(signal.expires_at).getTime() <= now) {
+      await entities.Signal.update(signal.id, { status: 'expired', reason: `${signal.reason || ''} · expired: superó 3 minutos` });
+    } else {
+      fresh.push(signal);
+    }
+  }
+  return fresh;
+}
+
+function rankSignals(signals) {
+  return signals
+    .filter(signal => signal.side === 'buy' && Number(signal.confidence || 0) >= 0.55)
+    .sort((a, b) => (Number(b.score || 0) - Number(a.score || 0)) || (Number(b.confidence || 0) - Number(a.confidence || 0)) || (new Date(b.created_date) - new Date(a.created_date)));
+}
+
+async function rejectSignal(entities, signal, reason) {
+  if (!signal?.id) return;
+  await entities.Signal.update(signal.id, { status: 'rejected', reason: `${signal.reason || ''} · rejected: ${reason}` });
+}
+
+async function markSignal(entities, signal, status, reason) {
+  if (!signal?.id) return;
+  await entities.Signal.update(signal.id, { status, reason: reason ? `${signal.reason || ''} · ${reason}` : signal.reason });
+}
+
 Deno.serve(async (req) => {
   const id = tickId();
   try {
@@ -418,21 +448,27 @@ Deno.serve(async (req) => {
     }
 
     assertLiveEnv();
-    if (!liveSession) return Response.json({ error: 'No hay BotSession LIVE activa' }, { status: 400 });
+    if (!liveSession) return Response.json({ ok: true, skipped: true, reason: 'No hay BotSession LIVE activa', tickId: id });
     if (!runOnce && !autoMode && !forceClose) return Response.json({ error: 'Payload inválido: usa runOnce, autoMode, forceClose o validateOnly' }, { status: 400 });
-    if (!liveBots.length && !forceClose) return Response.json({ error: 'No hay bots LIVE activos' }, { status: 400 });
+    if (!liveBots.length && !forceClose) return Response.json({ ok: true, skipped: true, reason: 'No hay bots LIVE activos', tickId: id });
 
     const nowIso = new Date().toISOString();
     const results = [];
     let balances = await getBalances();
     let openTrades = await entities.Trade.filter({ mode: 'live', status: 'open' }, '-created_date', 50);
+    let freshSignals = await getFreshSignals(entities);
+    const signalStats = { signalsAccepted: 0, signalsRejected: 0, tradesOpened: 0, tradesClosed: 0, reasons: [] };
 
     for (const trade of openTrades) {
       const pair = normalizePair(trade.pair);
       const bot = bots.find(item => item.name === trade.bot_name);
       try {
         const ticker = await getCurrentPrice(pair);
-        const decision = shouldCloseTrade(trade, ticker, forceClose, bot);
+        let decision = shouldCloseTrade(trade, ticker, forceClose, bot);
+        const contrarySignal = freshSignals.find(signal => signal.side === 'sell' && signal.bot_id === bot?.id && normalizePair(signal.pair) === pair);
+        if (!decision.close && contrarySignal) {
+          decision = { close: true, reason: `Señal contraria del mismo bot: ${contrarySignal.reason}`, signalId: contrarySignal.id };
+        }
         if (!decision.close) {
           results.push({ action: 'monitoring', tradeId: trade.id, bot: trade.bot_name, pair: displayPair(pair), price: ticker.price, pnlPercent: decision.pnlPct, reason: decision.reason });
           continue;
@@ -455,7 +491,9 @@ Deno.serve(async (req) => {
           notes: `LIVE cerrado: ${decision.reason}`,
         });
         await createAlert(entities, 'Orden LIVE cerrada', `${trade.bot_name} cerró ${displayPair(pair)} · PnL ${pnl.toFixed(6)}`, pnl >= 0 ? 'success' : 'warning');
+        if (decision.signalId) await markSignal(entities, { id: decision.signalId }, 'executed', 'executed: cierre por señal contraria');
         if (bot?.id) await safeBotUpdate(entities, bot.id, { last_run_at: nowIso, last_signal: `closed: ${decision.reason}`, last_error: '', cooldown_until: new Date(Date.now() + 60_000).toISOString() });
+        signalStats.tradesClosed += 1;
         results.push({ action: 'closed', tradeId: trade.id, bot: trade.bot_name, pair: displayPair(pair), exitPrice: ticker.price, pnl, pnlPercent: pnlPct, closeOrderId, rawResponse: closed.response });
       } catch (error) {
         if (bot?.id) await safeBotUpdate(entities, bot.id, { last_run_at: nowIso, last_error: error.message });
@@ -465,47 +503,41 @@ Deno.serve(async (req) => {
     }
 
     openTrades = await entities.Trade.filter({ mode: 'live', status: 'open' }, '-created_date', 50);
+    freshSignals = await getFreshSignals(entities);
     if (!forceClose) {
-      for (const bot of liveBots) {
+      for (const signal of rankSignals(freshSignals)) {
+        const bot = liveBots.find(item => item.id === signal.bot_id || item.name === signal.bot_name);
+        if (!bot) {
+          await rejectSignal(entities, signal, 'bot no activo o live_enabled false');
+          signalStats.signalsRejected += 1;
+          signalStats.reasons.push({ signalId: signal.id, bot: signal.bot_name, reason: 'bot no activo o live_enabled false' });
+          continue;
+        }
         try {
+          const pair = normalizePair(signal.pair);
           const maxQuote = Math.min(Number(bot.max_order_quote || bot.max_order_usd || env.maxQuote), env.maxQuote);
           if (maxQuote > 25) throw new Error('max_order_quote supera 25; bot bloqueado');
-          const choice = await chooseBestQuoteCurrency(bot, balances, maxQuote);
-          if (choice.error) {
-            await safeBotUpdate(entities, bot.id, { last_run_at: nowIso, last_signal: `LIVE bloqueado: ${choice.reason}`, last_error: '' });
-            results.push({ action: 'skip', bot: bot.name, selectedPair: choice.selectedPair || null, balanceQuote: choice.balanceQuote || 0, minVolume: choice.minVolume || null, minCost: choice.minCost || null, calculatedVolume: choice.calculatedVolume || null, reason: choice.reason, missingCapital: choice.missingCapital || null, attemptedPairs: choice.attemptedPairs || [] });
-            continue;
-          }
-          const orderQuote = choice.orderQuote;
-          const ticker = await getCurrentPrice(choice.pair);
-          const risk = await riskCheck(entities, bot, liveSession, choice.pair, balances, orderQuote, openTrades);
-          if (!risk.ok) {
-            await safeBotUpdate(entities, bot.id, { last_run_at: nowIso, last_signal: `skip: ${risk.reason}`, last_error: '' });
-            results.push({ action: 'skip', bot: bot.name, selectedPair: choice.selectedPair, balanceQuote: choice.balanceQuote, minVolume: choice.minVolume, minCost: choice.minCost, calculatedVolume: choice.calculatedVolume, reason: risk.reason });
-            continue;
-          }
-          const signal = await evaluateStrategy(bot, choice.pair, ticker);
-          if (signal.action !== 'buy') {
-            await safeBotUpdate(entities, bot.id, { last_run_at: nowIso, last_signal: signal.reason, last_error: '' });
-            results.push({ action: 'skip', bot: bot.name, selectedPair: choice.selectedPair, balanceQuote: choice.balanceQuote, minVolume: choice.minVolume, minCost: choice.minCost, calculatedVolume: choice.calculatedVolume, reason: signal.reason, confidence: signal.confidence });
-            continue;
-          }
-          const rules = await getAssetPairRules(choice.pair);
+          const ticker = await getCurrentPrice(pair);
+          if (ticker.spreadPct > 0.20) throw new Error(`spread alto ${ticker.spreadPct.toFixed(3)}%`);
+          const quote = quoteCurrency(pair);
+          const balanceQuote = getBalanceAmount(balances, quote);
+          const orderQuote = Math.min(maxQuote, balanceQuote);
+          const risk = await riskCheck(entities, bot, liveSession, pair, balances, orderQuote, openTrades);
+          if (!risk.ok) throw new Error(risk.reason);
+          const rules = await getAssetPairRules(pair);
           const volume = calculateValidVolume(orderQuote, ticker.price, rules);
-          if (!volume.ok) {
-            await safeBotUpdate(entities, bot.id, { last_run_at: nowIso, last_signal: `skip: ${volume.reason}`, last_error: '' });
-            await createAlert(entities, 'Capital insuficiente para orden LIVE', `${bot.name} ${displayPair(choice.pair)}: ${volume.reason}`, 'warning');
-            results.push({ action: 'skip', bot: bot.name, selectedPair: choice.selectedPair, balanceQuote: choice.balanceQuote, minVolume: choice.minVolume, minCost: choice.minCost, calculatedVolume: volume.volume, reason: volume.reason, missingCapital: Math.max(0, choice.minCost - orderQuote) });
-            continue;
-          }
-          const orderResponse = await placeMarketOrder(choice.pair, 'buy', volume.volume);
+          if (!volume.ok) throw new Error(volume.reason);
+
+          await markSignal(entities, signal, 'accepted', 'accepted: Risk Guardian OK');
+          signalStats.signalsAccepted += 1;
+          const orderResponse = await placeMarketOrder(pair, 'buy', volume.volume);
           const exchangeOrderId = Array.isArray(orderResponse.txid) ? orderResponse.txid.join(',') : '';
           if (!exchangeOrderId) throw new Error('Kraken no devolvió txid de apertura');
           const trade = await entities.Trade.create({
             exchange: 'kraken',
             mode: 'live',
             bot_name: bot.name,
-            pair: displayPair(choice.pair),
+            pair: displayPair(pair),
             side: 'buy',
             entry_price: ticker.price,
             amount: volume.volume,
@@ -517,19 +549,24 @@ Deno.serve(async (req) => {
             signal_reason: signal.reason,
             confidence: signal.confidence,
             fees: 0,
-            raw_response: JSON.stringify(orderResponse),
+            raw_response: JSON.stringify({ orderResponse, signal }),
             opened_by_tick_id: id,
-            notes: `LIVE spot market buy · usado ${orderQuote.toFixed(2)} ${choice.quote} disponible · máximo permitido ${maxQuote} · sin leverage/margin/futuros`,
+            notes: `LIVE spot market buy desde Signal Bus · usado ${orderQuote.toFixed(2)} ${quote} · sin consenso global`,
           });
-          await safeBotUpdate(entities, bot.id, { trades_count: Number(bot.trades_count || 0) + 1, last_run_at: nowIso, last_order_at: nowIso, last_signal: `opened: ${signal.reason}`, last_error: '' });
-          await createAlert(entities, 'Orden LIVE abierta', `${bot.name} abrió ${displayPair(choice.pair)} por ~${volume.cost.toFixed(2)} ${choice.quote}`, 'success');
+          await markSignal(entities, signal, 'executed', `executed: trade ${trade.id}`);
+          await safeBotUpdate(entities, bot.id, { trades_count: Number(bot.trades_count || 0) + 1, last_run_at: nowIso, last_order_at: nowIso, last_signal: `opened from signal: ${signal.reason}`, last_error: '' });
+          await createAlert(entities, 'Orden LIVE abierta por señal', `${bot.name} abrió ${displayPair(pair)} por ~${volume.cost.toFixed(2)} ${quote}`, 'success');
           openTrades.push(trade);
           balances = await getBalances();
-          results.push({ action: 'opened', tradeId: trade.id, bot: bot.name, selectedPair: choice.selectedPair, balanceQuote: choice.balanceQuote, minVolume: choice.minVolume, minCost: choice.minCost, calculatedVolume: volume.volume, entryPrice: ticker.price, quoteUsed: orderQuote, quoteCurrency: choice.quote, exchangeOrderId, confidence: signal.confidence, reason: signal.reason, rawResponse: orderResponse });
+          signalStats.tradesOpened += 1;
+          results.push({ action: 'opened', source: 'Signal Bus', signalId: signal.id, tradeId: trade.id, bot: bot.name, selectedPair: displayPair(pair), score: signal.score, confidence: signal.confidence, entryPrice: ticker.price, quoteUsed: orderQuote, quoteCurrency: quote, exchangeOrderId, reason: signal.reason, rawResponse: orderResponse });
+          break;
         } catch (error) {
-          await safeBotUpdate(entities, bot.id, { last_run_at: nowIso, last_error: error.message });
-          await createAlert(entities, 'Error LIVE crítico', `${bot.name}: ${error.message}`, 'critical');
-          results.push({ action: 'error', bot: bot.name, error: error.message });
+          await rejectSignal(entities, signal, error.message);
+          if (bot?.id) await safeBotUpdate(entities, bot.id, { last_run_at: nowIso, last_signal: `signal rejected: ${error.message}`, last_error: '' });
+          signalStats.signalsRejected += 1;
+          signalStats.reasons.push({ signalId: signal.id, bot: signal.bot_name, pair: signal.pair, reason: error.message });
+          results.push({ action: 'signal_rejected', signalId: signal.id, bot: signal.bot_name, pair: signal.pair, reason: error.message });
         }
       }
     }
@@ -537,7 +574,7 @@ Deno.serve(async (req) => {
     const closedTrades = await entities.Trade.filter({ mode: 'live', status: 'closed' }, '-created_date', 100);
     const totalPnl = closedTrades.reduce((sum, trade) => sum + Number(trade.profit_loss || 0), 0);
     await updateSession(entities, liveSession, { last_tick_at: nowIso, total_trades: closedTrades.length + openTrades.length, total_pnl: Number(totalPnl.toFixed(8)), last_error: '' });
-    return Response.json({ ok: true, tickId: id, autoMode, runOnce, forceClose, env: { maxQuote: env.maxQuote, intervalMinutes: env.intervalMinutes }, results });
+    return Response.json({ ok: true, tickId: id, executionTick: nowIso, autoMode, runOnce, forceClose, env: { maxQuote: env.maxQuote, intervalMinutes: env.intervalMinutes }, scannedBots: liveBots.length, signalsAccepted: signalStats.signalsAccepted, signalsRejected: signalStats.signalsRejected, tradesOpened: signalStats.tradesOpened, tradesClosed: signalStats.tradesClosed, reasons: signalStats.reasons, results });
   } catch (error) {
     try {
       const base44 = createClientFromRequest(req);

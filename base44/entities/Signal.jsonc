@@ -1,0 +1,73 @@
+{
+  "name": "Signal",
+  "type": "object",
+  "properties": {
+    "bot_name": {
+      "type": "string"
+    },
+    "bot_id": {
+      "type": "string"
+    },
+    "strategy": {
+      "type": "string"
+    },
+    "exchange": {
+      "type": "string",
+      "default": "kraken"
+    },
+    "pair": {
+      "type": "string"
+    },
+    "side": {
+      "type": "string",
+      "enum": [
+        "buy",
+        "sell",
+        "hold"
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "default": 0
+    },
+    "score": {
+      "type": "number",
+      "default": 0
+    },
+    "reason": {
+      "type": "string"
+    },
+    "price": {
+      "type": "number"
+    },
+    "timeframe": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "new",
+        "accepted",
+        "rejected",
+        "expired",
+        "executed"
+      ],
+      "default": "new"
+    },
+    "expires_at": {
+      "type": "string"
+    },
+    "raw_data": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "bot_name",
+    "bot_id",
+    "strategy",
+    "exchange",
+    "pair",
+    "side",
+    "status"
+  ]
+}
