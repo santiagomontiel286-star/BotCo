@@ -5,7 +5,8 @@ import { Activity, AlertTriangle, Bot, ChevronUp, Eye, EyeOff, Radio } from "luc
 import { cn } from "@/lib/utils";
 import useKrakenData from "@/hooks/useKrakenData";
 
-const REFRESH_MS = 15000;
+const REFRESH_MS = 30000;
+const HEALTH_REFRESH_MS = 60000;
 
 function fmtTime(value) {
   if (!value) return "—";
@@ -42,16 +43,16 @@ export default function BotLiveMonitor() {
     if (saved !== null) return saved === "true";
     return window.innerWidth >= 1024;
   });
-  const { totalUSD, loading: loadingKraken } = useKrakenData({ intervalMs: REFRESH_MS });
+  const { totalUSD, loading: loadingKraken } = useKrakenData({ intervalMs: HEALTH_REFRESH_MS });
 
-  const { data: bots = [] } = useQuery({ queryKey: ["monitor-bots"], queryFn: () => base44.entities.Bot.list(), refetchInterval: REFRESH_MS });
+  const { data: bots = [] } = useQuery({ queryKey: ["bots"], queryFn: () => base44.entities.Bot.list(), refetchInterval: REFRESH_MS });
   const { data: trades = [] } = useQuery({ queryKey: ["monitor-trades"], queryFn: () => base44.entities.Trade.list("-created_date", 20), refetchInterval: REFRESH_MS });
   const { data: alerts = [] } = useQuery({ queryKey: ["monitor-alerts"], queryFn: () => base44.entities.Alert.list("-created_date", 10), refetchInterval: REFRESH_MS });
-  const { data: sessions = [] } = useQuery({ queryKey: ["monitor-sessions"], queryFn: () => base44.entities.BotSession.filter({ active: true }), refetchInterval: REFRESH_MS });
+  const { data: sessions = [] } = useQuery({ queryKey: ["botSessionsLive"], queryFn: () => base44.entities.BotSession.filter({ active: true }), refetchInterval: REFRESH_MS });
   const { data: health } = useQuery({
-    queryKey: ["monitor-trading-health"],
+    queryKey: ["liveEnvStatus"],
     queryFn: async () => (await base44.functions.invoke("tradingTick", { validateOnly: true })).data,
-    refetchInterval: REFRESH_MS,
+    refetchInterval: HEALTH_REFRESH_MS,
   });
 
   const session = sessions.find(item => item.mode === "live") || sessions[0];

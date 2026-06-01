@@ -63,9 +63,12 @@ Deno.serve(async (req) => {
       last_error: '',
     });
 
-    await entities.Alert.create({ title: 'Bots LIVE activados', message: `${bots.length} bots activados en Kraken Spot con máximo ${env.maxQuote} por orden.`, severity: 'warning', source: 'startLiveBots', is_read: false });
-    const tick = await base44.functions.invoke('tradingTick', { runOnce: true, autoMode: true });
-    return Response.json({ ok: true, session, bots: bots.length, env, tick: tick.data || tick });
+    try {
+      await entities.Alert.create({ title: 'Bots LIVE activados', message: `${bots.length} bots activados en Kraken Spot con máximo ${env.maxQuote} por orden. Ejecuta el ciclo manual o espera al cron.`, severity: 'warning', source: 'startLiveBots', is_read: false });
+    } catch (error) {
+      console.log(`Alert skipped: ${error.message}`);
+    }
+    return Response.json({ ok: true, session, bots: bots.length, env, message: 'LIVE activado sin ejecutar órdenes inmediatas para evitar rate limit' });
   } catch (error) {
     return Response.json({ ok: false, error: error.message }, { status: 500 });
   }

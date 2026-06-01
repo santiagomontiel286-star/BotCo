@@ -1,50 +1,77 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { base44 } from "@/api/base44Client";
 
-/**
- * Shared hook — fetches ALL Kraken data (portfolio, open orders, trades)
- * and keeps it refreshed automatically.
- *
- * Usage:
- *   const { portfolio, totalUSD, balance, openOrders, trades, loading, error, refresh } = useKrakenData();
- */
-export default function useKrakenData({ intervalMs = 30000 } = {}) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+const CACHE_TTL_MS = 60000;
+const subscribers = new Set();
+let sharedData = null;
+let sharedError = null;
+let sharedLoading = false;
+let sharedFetchedAt = 0;
+let sharedPromise = null;
+
+function notify() {
+  subscribers.forEach(listener => listener({ data: sharedData, error: sharedError, loading: sharedLoading }));
+}
+
+function getSessionKeys() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem('botco_api_keys') || 'null');
+    if (saved?.krakenKey && saved?.krakenSecret) return { apiKey: saved.krakenKey, apiSecret: saved.krakenSecret };
+  } catch {}
+  return {};
+}
+
+async function fetchSharedKraken(force = false) {
+  if (!force && sharedData && Date.now() - sharedFetchedAt < CACHE_TTL_MS) return sharedData;
+  if (sharedPromise) return sharedPromise;
+
+  sharedLoading = true;
+  sharedError = null;
+  notify();
+
+  sharedPromise = base44.functions.invoke('krakenAccount', getSessionKeys())
+    .then(res => {
+      if (res.data?.portfolio) {
+        sharedData = res.data;
+        sharedFetchedAt = Date.now();
+      } else {
+        sharedError = res.data?.error || "Sin datos de Kraken";
+      }
+      return sharedData;
+    })
+    .catch(() => {
+      sharedError = "No se pudo conectar con Kraken";
+      return sharedData;
+    })
+    .finally(() => {
+      sharedLoading = false;
+      sharedPromise = null;
+      notify();
+    });
+
+  return sharedPromise;
+}
+
+export default function useKrakenData({ intervalMs = 60000 } = {}) {
+  const safeInterval = Math.max(intervalMs, CACHE_TTL_MS);
+  const [state, setState] = useState({ data: sharedData, error: sharedError, loading: !sharedData });
   const timerRef = useRef(null);
 
-  const refresh = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
-    setError(null);
-    try {
-      // Read user-provided keys from sessionStorage (set in Settings page)
-      let extraParams = {};
-      try {
-        const saved = JSON.parse(sessionStorage.getItem('botco_api_keys') || 'null');
-        if (saved?.krakenKey && saved?.krakenSecret) {
-          extraParams = { apiKey: saved.krakenKey, apiSecret: saved.krakenSecret };
-        }
-      } catch {}
-      const res = await base44.functions.invoke('krakenAccount', extraParams);
-      if (res.data?.portfolio) {
-        setData(res.data);
-      } else {
-        setError(res.data?.error || "Sin datos de Kraken");
-      }
-    } catch (e) {
-      setError("No se pudo conectar con Kraken");
-    } finally {
-      setLoading(false);
-    }
+  const refresh = useCallback(async (force = false) => {
+    await fetchSharedKraken(force);
   }, []);
 
   useEffect(() => {
+    subscribers.add(setState);
     refresh(false);
-    timerRef.current = setInterval(() => refresh(true), intervalMs);
-    return () => clearInterval(timerRef.current);
-  }, [refresh, intervalMs]);
+    timerRef.current = setInterval(() => refresh(false), safeInterval);
+    return () => {
+      subscribers.delete(setState);
+      clearInterval(timerRef.current);
+    };
+  }, [refresh, safeInterval]);
 
+  const data = state.data;
   return {
     portfolio: data?.portfolio || [],
     totalUSD: data?.totalUSD || 0,
@@ -52,8 +79,8 @@ export default function useKrakenData({ intervalMs = 30000 } = {}) {
     openOrders: data?.openOrders || [],
     trades: data?.trades || [],
     fetchedAt: data?.fetchedAt || null,
-    loading,
-    error,
-    refresh: () => refresh(false),
+    loading: state.loading,
+    error: state.error,
+    refresh: () => refresh(true),
   };
 }
