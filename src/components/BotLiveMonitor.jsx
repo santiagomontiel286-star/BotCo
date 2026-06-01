@@ -73,8 +73,8 @@ export default function BotLiveMonitor() {
   const liveBots = bots.filter(bot => bot.trading_mode === "live" && bot.live_enabled === true);
   const activeBots = bots.filter(bot => bot.status === "active");
   const blockedBots = bots.filter(bot => `${bot.last_signal || ""} ${bot.last_error || ""}`.toLowerCase().match(/skip|bloqueado|capital inferior|volumen|mínimo/));
-  const openTrades = trades.filter(trade => trade.status === "open");
-  const latestTrade = trades[0];
+  const openTrades = trades.filter(trade => trade.status === "open" && trade.mode === "live");
+  const latestTrade = trades.find(trade => trade.mode === "live");
   const latestSignal = signals[0];
   const latestRaw = parseRawData(latestSignal?.raw_data);
   const scannedPairs = latestRaw.scannedPairs || health?.supportedPairs || [];
