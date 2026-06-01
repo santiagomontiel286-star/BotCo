@@ -306,7 +306,6 @@ export default function BotActivationPanel() {
   const { active, assignedCapital, initialBalance, sessionMode, startedAt, activate, deactivate } = useBotSession();
   const [modalOpen, setModalOpen] = useState(false);
   const [reportData, setReportData] = useState(null);
-  const [trades, setTrades] = useState(0);
   const [mode, setMode] = useState("real");
   const [demoCapital] = useState(10000);
 
@@ -319,6 +318,7 @@ export default function BotActivationPanel() {
   const currentProfile = sessions[0]?.risk_profile || getSavedProfile();
   const activeMode = sessions[0]?.mode || sessionMode || mode;
   const activeBots = buildBots(currentProfile);
+  const trades = sessions[0]?.total_trades || 0;
   const sessionStart = sessions[0]?.started_at || (startedAt ? new Date(startedAt).toISOString() : new Date().toISOString());
 
   const krakenBalance = totalUSD;
@@ -329,21 +329,8 @@ export default function BotActivationPanel() {
       : initialBalance > 0 ? parseFloat((totalUSD - initialBalance).toFixed(2)) : 0
     : 0;
 
-  // Poll trade count from session
-  useEffect(() => {
-    if (!active) return;
-    const fetchTrades = async () => {
-      const s = await base44.entities.BotSession.filter({ active: true });
-      if (s?.[0]) setTrades(s[0].total_trades || 0);
-    };
-    fetchTrades();
-    const t = setInterval(fetchTrades, 30000);
-    return () => clearInterval(t);
-  }, [active]);
-
   const handleActivate = async (amount) => {
     await activate(amount, mode === "demo" ? amount : totalUSD, mode);
-    setTrades(0);
     setModalOpen(false);
   };
 
