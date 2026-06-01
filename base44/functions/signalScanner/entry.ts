@@ -197,15 +197,41 @@ Deno.serve(async (req) => {
     const jobs = [];
     for (const bot of bots) {
       for (const pair of PAIRS) {
-        jobs.push(evaluateCandidate({ bot, pair, balances, openTrades, maxQuote: Math.min(Number(bot.max_order_quote || bot.max_order_usd || maxQuote), maxQuote), minReserved }));
+        jobs.push(
+          evaluateCandidate({ bot, pair, balances, openTrades, maxQuote: Math.min(Number(bot.max_order_quote || bot.max_order_usd || maxQuote), maxQuote), minReserved })
+            .catch(error => ({ rejectedOnly: true, bot, pair, reason: error.message }))
+        );
       }
     }
 
     const settled = await Promise.allSettled(jobs);
     const candidates = [];
+    const rejectedCandidates = [];
     for (const result of settled) {
-      if (result.status === 'fulfilled') candidates.push(result.value);
+      if (result.status === 'fulfilled' && result.value?.rejectedOnly) rejectedCandidates.push(result.value);
+      else if (result.status === 'fulfilled') candidates.push(result.value);
       else rejected.push({ reason: result.reason?.message || 'error evaluando par' });
+    }
+
+    for (const item of rejectedCandidates) {
+      const signal = await entities.Signal.create({
+        bot_name: item.bot.name,
+        bot_id: item.bot.id,
+        strategy: item.bot.strategy || item.bot.type,
+        exchange: 'kraken',
+        pair: item.pair,
+        side: 'hold',
+        confidence: 0,
+        score: 0,
+        reason: item.reason,
+        price: 0,
+        timeframe: '5m',
+        status: 'rejected',
+        expires_at: expiresAt,
+        raw_data: JSON.stringify({ scannedPairs: PAIRS, parallel: true, rejectedPair: item.pair, reason: item.reason })
+      });
+      created.push(signal);
+      rejected.push({ bot: item.bot.name, pair: item.pair, reason: item.reason });
     }
 
     const sorted = candidates.sort((a, b) => b.score - a.score);

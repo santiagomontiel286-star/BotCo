@@ -13,8 +13,14 @@ export default function TradingLoopButton() {
     setRunning(true);
     setSummary(null);
     try {
-      const response = await base44.functions.invoke("tradingLoop", {});
-      setSummary(response.data);
+      const scanner = await base44.functions.invoke("signalScanner", { autoMode: true });
+      const execution = await base44.functions.invoke("tradingTick", { runOnce: true, autoMode: true });
+      setSummary({
+        ok: true,
+        loopTick: new Date().toISOString(),
+        scanner: scanner.data,
+        execution: execution.data,
+      });
       toast.success("Loop ejecutado");
     } catch (error) {
       const message = error?.response?.data?.error || error.message;

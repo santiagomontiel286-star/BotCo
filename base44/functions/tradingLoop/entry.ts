@@ -8,8 +8,9 @@ Deno.serve(async (req) => {
     const user = await base44.auth.me().catch(() => null);
     if (!autoMode && !user) return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const scanner = await base44.functions.invoke('signalScanner', { autoMode: true });
-    const execution = await base44.functions.invoke('tradingTick', { runOnce: true, autoMode: true });
+    const functionClient = autoMode ? base44.asServiceRole.functions : base44.functions;
+    const scanner = await functionClient.invoke('signalScanner', { autoMode: true });
+    const execution = await functionClient.invoke('tradingTick', { runOnce: true, autoMode: true });
 
     return Response.json({
       ok: true,
