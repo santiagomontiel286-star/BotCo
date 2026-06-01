@@ -5,6 +5,7 @@ import DemoBanner from "./DemoBanner";
 import { Outlet } from "react-router-dom";
 import { Menu } from "lucide-react";
 import Sidebar from "./Sidebar";
+import BotLiveMonitor from "./BotLiveMonitor";
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -36,9 +37,10 @@ export default function Layout() {
           </div>
         </header>
         
-        <main className="p-4 lg:p-6">
+        <main className="p-4 lg:p-6 lg:pr-[360px]">
           <Outlet />
         </main>
+        <BotLiveMonitor />
       </div>
     </div>
   );
