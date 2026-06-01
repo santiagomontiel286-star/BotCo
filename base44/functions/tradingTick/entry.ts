@@ -24,6 +24,7 @@ const DISPLAY_PAIRS = {
   ADAEUR: 'ADA/EUR',
 };
 let lastNonce = 0;
+const publicCache = new Map();
 
 function nextNonce() {
   const now = Date.now() * 1000;
@@ -95,11 +96,17 @@ async function krakenPrivate(endpoint, params = {}) {
 }
 
 async function krakenPublic(endpoint, params = {}) {
+  const cacheKey = `${endpoint}:${JSON.stringify(params)}`;
+  const ttlMs = endpoint === 'AssetPairs' ? 30 * 60 * 1000 : 5000;
+  const cached = publicCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < ttlMs) return cached.result;
+
   const url = new URL(`${KRAKEN_API}/0/public/${endpoint}`);
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
   const response = await fetch(url);
   const json = await response.json();
   if (json.error?.length) throw new Error(json.error.join(', '));
+  publicCache.set(cacheKey, { at: Date.now(), result: json.result });
   return json.result;
 }
 
@@ -343,7 +350,20 @@ function shouldCloseTrade(trade, ticker, forceClose, bot) {
 }
 
 async function createAlert(entities, title, message, severity = 'info') {
-  await entities.Alert.create({ title, message, severity, source: 'tradingTick LIVE', is_read: false });
+  try {
+    await entities.Alert.create({ title, message, severity, source: 'tradingTick LIVE', is_read: false });
+  } catch (error) {
+    console.log(`Alert skipped: ${error.message}`);
+  }
+}
+
+async function safeBotUpdate(entities, botId, data) {
+  if (!botId) return;
+  try {
+    await safeBotUpdate(entities, botId, data);
+  } catch (error) {
+    console.log(`Bot update skipped: ${error.message}`);
+  }
 }
 
 async function riskCheck(entities, bot, session, pair, balances, maxQuote, openTrades) {
@@ -366,7 +386,12 @@ async function riskCheck(entities, bot, session, pair, balances, maxQuote, openT
 }
 
 async function updateSession(entities, session, data) {
-  if (session?.id) await entities.BotSession.update(session.id, data);
+  if (!session?.id) return;
+  try {
+    await entities.BotSession.update(session.id, data);
+  } catch (error) {
+    console.log(`Session update skipped: ${error.message}`);
+  }
 }
 
 Deno.serve(async (req) => {
@@ -430,10 +455,10 @@ Deno.serve(async (req) => {
           notes: `LIVE cerrado: ${decision.reason}`,
         });
         await createAlert(entities, 'Orden LIVE cerrada', `${trade.bot_name} cerró ${displayPair(pair)} · PnL ${pnl.toFixed(6)}`, pnl >= 0 ? 'success' : 'warning');
-        if (bot?.id) await entities.Bot.update(bot.id, { last_run_at: nowIso, last_signal: `closed: ${decision.reason}`, last_error: '', cooldown_until: new Date(Date.now() + 60_000).toISOString() });
+        if (bot?.id) await safeBotUpdate(entities, bot.id, { last_run_at: nowIso, last_signal: `closed: ${decision.reason}`, last_error: '', cooldown_until: new Date(Date.now() + 60_000).toISOString() });
         results.push({ action: 'closed', tradeId: trade.id, bot: trade.bot_name, pair: displayPair(pair), exitPrice: ticker.price, pnl, pnlPercent: pnlPct, closeOrderId, rawResponse: closed.response });
       } catch (error) {
-        if (bot?.id) await entities.Bot.update(bot.id, { last_run_at: nowIso, last_error: error.message });
+        if (bot?.id) await safeBotUpdate(entities, bot.id, { last_run_at: nowIso, last_error: error.message });
         await createAlert(entities, 'Error cerrando operación LIVE', `${trade.bot_name}: ${error.message}`, 'critical');
         results.push({ action: 'close_error', tradeId: trade.id, bot: trade.bot_name, pair: displayPair(pair), error: error.message });
       }
@@ -447,7 +472,7 @@ Deno.serve(async (req) => {
           if (maxQuote > 25) throw new Error('max_order_quote supera 25; bot bloqueado');
           const choice = await chooseBestQuoteCurrency(bot, balances, maxQuote);
           if (choice.error) {
-            await entities.Bot.update(bot.id, { last_run_at: nowIso, last_signal: `LIVE bloqueado: ${choice.reason}`, last_error: '' });
+            await safeBotUpdate(entities, bot.id, { last_run_at: nowIso, last_signal: `LIVE bloqueado: ${choice.reason}`, last_error: '' });
             results.push({ action: 'skip', bot: bot.name, selectedPair: choice.selectedPair || null, balanceQuote: choice.balanceQuote || 0, minVolume: choice.minVolume || null, minCost: choice.minCost || null, calculatedVolume: choice.calculatedVolume || null, reason: choice.reason, missingCapital: choice.missingCapital || null, attemptedPairs: choice.attemptedPairs || [] });
             continue;
           }
@@ -455,20 +480,20 @@ Deno.serve(async (req) => {
           const ticker = await getCurrentPrice(choice.pair);
           const risk = await riskCheck(entities, bot, liveSession, choice.pair, balances, orderQuote, openTrades);
           if (!risk.ok) {
-            await entities.Bot.update(bot.id, { last_run_at: nowIso, last_signal: `skip: ${risk.reason}`, last_error: '' });
+            await safeBotUpdate(entities, bot.id, { last_run_at: nowIso, last_signal: `skip: ${risk.reason}`, last_error: '' });
             results.push({ action: 'skip', bot: bot.name, selectedPair: choice.selectedPair, balanceQuote: choice.balanceQuote, minVolume: choice.minVolume, minCost: choice.minCost, calculatedVolume: choice.calculatedVolume, reason: risk.reason });
             continue;
           }
           const signal = await evaluateStrategy(bot, choice.pair, ticker);
           if (signal.action !== 'buy') {
-            await entities.Bot.update(bot.id, { last_run_at: nowIso, last_signal: signal.reason, last_error: '' });
+            await safeBotUpdate(entities, bot.id, { last_run_at: nowIso, last_signal: signal.reason, last_error: '' });
             results.push({ action: 'skip', bot: bot.name, selectedPair: choice.selectedPair, balanceQuote: choice.balanceQuote, minVolume: choice.minVolume, minCost: choice.minCost, calculatedVolume: choice.calculatedVolume, reason: signal.reason, confidence: signal.confidence });
             continue;
           }
           const rules = await getAssetPairRules(choice.pair);
           const volume = calculateValidVolume(orderQuote, ticker.price, rules);
           if (!volume.ok) {
-            await entities.Bot.update(bot.id, { last_run_at: nowIso, last_signal: `skip: ${volume.reason}`, last_error: '' });
+            await safeBotUpdate(entities, bot.id, { last_run_at: nowIso, last_signal: `skip: ${volume.reason}`, last_error: '' });
             await createAlert(entities, 'Capital insuficiente para orden LIVE', `${bot.name} ${displayPair(choice.pair)}: ${volume.reason}`, 'warning');
             results.push({ action: 'skip', bot: bot.name, selectedPair: choice.selectedPair, balanceQuote: choice.balanceQuote, minVolume: choice.minVolume, minCost: choice.minCost, calculatedVolume: volume.volume, reason: volume.reason, missingCapital: Math.max(0, choice.minCost - orderQuote) });
             continue;
@@ -496,13 +521,13 @@ Deno.serve(async (req) => {
             opened_by_tick_id: id,
             notes: `LIVE spot market buy · usado ${orderQuote.toFixed(2)} ${choice.quote} disponible · máximo permitido ${maxQuote} · sin leverage/margin/futuros`,
           });
-          await entities.Bot.update(bot.id, { trades_count: Number(bot.trades_count || 0) + 1, last_run_at: nowIso, last_order_at: nowIso, last_signal: `opened: ${signal.reason}`, last_error: '' });
+          await safeBotUpdate(entities, bot.id, { trades_count: Number(bot.trades_count || 0) + 1, last_run_at: nowIso, last_order_at: nowIso, last_signal: `opened: ${signal.reason}`, last_error: '' });
           await createAlert(entities, 'Orden LIVE abierta', `${bot.name} abrió ${displayPair(choice.pair)} por ~${volume.cost.toFixed(2)} ${choice.quote}`, 'success');
           openTrades.push(trade);
           balances = await getBalances();
           results.push({ action: 'opened', tradeId: trade.id, bot: bot.name, selectedPair: choice.selectedPair, balanceQuote: choice.balanceQuote, minVolume: choice.minVolume, minCost: choice.minCost, calculatedVolume: volume.volume, entryPrice: ticker.price, quoteUsed: orderQuote, quoteCurrency: choice.quote, exchangeOrderId, confidence: signal.confidence, reason: signal.reason, rawResponse: orderResponse });
         } catch (error) {
-          await entities.Bot.update(bot.id, { last_run_at: nowIso, last_error: error.message });
+          await safeBotUpdate(entities, bot.id, { last_run_at: nowIso, last_error: error.message });
           await createAlert(entities, 'Error LIVE crítico', `${bot.name}: ${error.message}`, 'critical');
           results.push({ action: 'error', bot: bot.name, error: error.message });
         }
