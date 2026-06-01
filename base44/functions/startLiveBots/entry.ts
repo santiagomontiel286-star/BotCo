@@ -13,7 +13,7 @@ function validateEnv() {
   if (!toBool(Deno.env.get('KRAKEN_LIVE_TRADING'))) throw new Error('KRAKEN_LIVE_TRADING debe ser true');
   if (!toBool(Deno.env.get('BOTCO_LIVE_ENABLED'))) throw new Error('BOTCO_LIVE_ENABLED debe ser true');
   if (!maxQuote || maxQuote <= 0) throw new Error('MAX_LIVE_ORDER_QUOTE debe ser mayor que 0');
-  return { maxQuote, maxOpenTrades: Number(Deno.env.get('MAX_OPEN_LIVE_TRADES') || '3'), minReservedQuote: Number(Deno.env.get('MIN_RESERVED_QUOTE') || '2'), intervalMinutes: Number(Deno.env.get('BOTCO_AUTOTRADE_INTERVAL_MINUTES') || '5') };
+  return { maxQuote, maxOpenTrades: Math.min(Number(Deno.env.get('MAX_OPEN_LIVE_TRADES') || '2'), 2), minReservedQuote: Math.max(Number(Deno.env.get('MIN_RESERVED_QUOTE') || '4'), 4), intervalMinutes: Math.max(1, Number(Deno.env.get('BOTCO_AUTOTRADE_INTERVAL_MINUTES') || '1')) };
 }
 
 Deno.serve(async (req) => {
@@ -57,18 +57,33 @@ Deno.serve(async (req) => {
       started_at: now,
       last_tick_at: now,
       risk_profile: payload.riskProfile || 'conservador',
-      pairs: ['ADAEUR', 'XRPEUR', 'DOTEUR', 'LINKEUR', 'ATOMEUR', 'SOLEUR', 'ETHEUR', 'ADAUSD', 'XRPUSD', 'DOTUSD', 'LINKUSD', 'ATOMUSD', 'SOLUSD', 'ETHUSD'],
+      pairs: ['ADAEUR', 'XRPEUR', 'DOTEUR', 'LINKEUR', 'ATOMEUR', 'SOLEUR'],
       total_trades: 0,
       total_pnl: 0,
       last_error: '',
     });
 
+    let firstCycle = null;
     try {
-      await entities.Alert.create({ title: 'Bots LIVE activados', message: `${bots.length} bots activados en Kraken Spot con máximo ${env.maxQuote} por orden. Ejecuta el ciclo manual o espera al cron.`, severity: 'warning', source: 'startLiveBots', is_read: false });
+      const functionClient = base44.asServiceRole?.functions?.invoke ? base44.asServiceRole.functions : base44.functions;
+      firstCycle = await functionClient.invoke('tradingLoop', { autoMode: true });
+    } catch (error) {
+      try {
+        const functionClient = base44.asServiceRole?.functions?.invoke ? base44.asServiceRole.functions : base44.functions;
+        const scanner = await functionClient.invoke('signalScanner', { autoMode: true });
+        const execution = await functionClient.invoke('tradingTick', { runOnce: true, autoMode: true });
+        firstCycle = { data: { fallback: true, scanner: scanner.data || scanner, execution: execution.data || execution } };
+      } catch (fallbackError) {
+        firstCycle = { data: { ok: false, error: fallbackError.message } };
+      }
+    }
+
+    try {
+      await entities.Alert.create({ title: 'Bots LIVE activados', message: `${bots.length} bots activados en Kraken Spot con máximo ${env.maxQuote} por orden. Primer ciclo oficial ejecutado.`, severity: 'warning', source: 'startLiveBots', is_read: false });
     } catch (error) {
       console.log(`Alert skipped: ${error.message}`);
     }
-    return Response.json({ ok: true, session, bots: bots.length, env, message: 'LIVE activado sin ejecutar órdenes inmediatas para evitar rate limit' });
+    return Response.json({ ok: true, session, bots: bots.length, env, firstCycle: firstCycle?.data || firstCycle, message: 'LIVE activado y primer ciclo oficial solicitado' });
   } catch (error) {
     return Response.json({ ok: false, error: error.message }, { status: 500 });
   }

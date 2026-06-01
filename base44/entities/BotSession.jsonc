@@ -19,6 +19,15 @@
     "last_tick_at": {
       "type": "string"
     },
+    "last_scanner_at": {
+      "type": "string"
+    },
+    "last_execution_at": {
+      "type": "string"
+    },
+    "last_cycle_summary": {
+      "type": "string"
+    },
     "mode": {
       "type": "string",
       "enum": [
@@ -43,8 +52,12 @@
         "type": "string"
       },
       "default": [
-        "XBTEUR",
-        "ETHEUR"
+        "ADAEUR",
+        "XRPEUR",
+        "DOTEUR",
+        "LINKEUR",
+        "ATOMEUR",
+        "SOLEUR"
       ]
     },
     "total_pnl": {

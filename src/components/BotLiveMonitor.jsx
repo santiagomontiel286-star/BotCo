@@ -5,8 +5,8 @@ import { Activity, AlertTriangle, Bot, ChevronUp, Eye, EyeOff, Radio } from "luc
 import { cn } from "@/lib/utils";
 import useKrakenData from "@/hooks/useKrakenData";
 
-const REFRESH_MS = 30000;
-const HEALTH_REFRESH_MS = 60000;
+const REFRESH_MS = 45000;
+const HEALTH_REFRESH_MS = 90000;
 
 function fmtTime(value) {
   if (!value) return "—";
@@ -66,10 +66,12 @@ export default function BotLiveMonitor() {
   });
 
   const session = sessions.find(item => item.mode === "live") || sessions[0];
-  const lastTick = session?.last_tick_at || session?.started_at;
-  const intervalMinutes = Number(health?.intervalMinutes || 5);
-  const nextTick = lastTick ? new Date(new Date(lastTick).getTime() + intervalMinutes * 60000) : null;
-  const cronStale = session?.mode === "live" && (!lastTick || Date.now() - new Date(lastTick).getTime() > intervalMinutes * 2 * 60000);
+  const cycleSummary = parseRawData(session?.last_cycle_summary);
+  const lastScannerTick = session?.last_scanner_at || cycleSummary.scannerTick;
+  const lastExecutionTick = session?.last_execution_at || session?.last_tick_at || cycleSummary.executionTick;
+  const lastTick = lastExecutionTick || session?.started_at;
+  const intervalMinutes = Number(health?.intervalMinutes || 1);
+  const cronStale = session?.mode === "live" && (!lastExecutionTick || Date.now() - new Date(lastExecutionTick).getTime() > Math.max(intervalMinutes * 2, 2) * 60000);
   const liveBots = bots.filter(bot => bot.trading_mode === "live" && bot.live_enabled === true);
   const activeBots = bots.filter(bot => bot.status === "active");
   const blockedBots = bots.filter(bot => `${bot.last_signal || ""} ${bot.last_error || ""}`.toLowerCase().match(/skip|bloqueado|capital inferior|volumen|mínimo/));
@@ -148,12 +150,13 @@ export default function BotLiveMonitor() {
           <div className="max-h-[calc(72vh-52px)] lg:max-h-[calc(100vh-162px)] overflow-y-auto p-4 space-y-4">
             <section className="grid grid-cols-2 gap-2 text-xs">
               <div className="rounded-xl bg-muted/35 border border-border/40 p-3"><p className="text-muted-foreground">Sistema</p><p className={cn("font-semibold", healthStatus === "error" ? "text-destructive" : healthStatus === "warning" ? "text-chart-3" : "text-primary")}>{cronStale ? "Sin cron" : activeBots.length ? "Operando" : "Detenido"}</p></div>
-              <div className="rounded-xl bg-muted/35 border border-border/40 p-3"><p className="text-muted-foreground">Scanner tick</p><p className="font-mono text-foreground">{fmtTime(latestSignal?.created_date)}</p></div>
-              <div className="rounded-xl bg-muted/35 border border-border/40 p-3"><p className="text-muted-foreground">Execution tick</p><p className="font-mono text-foreground">{fmtTime(lastTick)}</p></div>
+              <div className="rounded-xl bg-muted/35 border border-border/40 p-3"><p className="text-muted-foreground">Scanner tick</p><p className="font-mono text-foreground">{fmtTime(lastScannerTick)}</p></div>
+              <div className="rounded-xl bg-muted/35 border border-border/40 p-3"><p className="text-muted-foreground">Execution tick</p><p className="font-mono text-foreground">{fmtTime(lastExecutionTick)}</p></div>
               <div className="rounded-xl bg-muted/35 border border-border/40 p-3"><p className="text-muted-foreground">Health</p><p className="font-semibold text-foreground">{health?.ok ? "OK" : "Error"}</p></div>
             </section>
 
-            {cronStale && <div className="flex items-start gap-2 rounded-xl border border-chart-3/30 bg-chart-3/10 p-3 text-xs text-chart-3"><AlertTriangle className="w-4 h-4 shrink-0" />Sin cron: el último tick está atrasado.</div>}
+            {cronStale && <div className="flex items-start gap-2 rounded-xl border border-chart-3/30 bg-chart-3/10 p-3 text-xs text-chart-3"><AlertTriangle className="w-4 h-4 shrink-0" />Sin cron: pulsa Ejecutar ciclo ahora.</div>}
+            {session?.last_error && <div className="rounded-xl border border-border/40 bg-muted/30 p-3 text-xs text-muted-foreground"><span className="text-foreground font-semibold">Último motivo:</span> {session.last_error}</div>}
 
             <section>
               <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-foreground"><Activity className="w-3.5 h-3.5 text-primary" />Resumen</div>
@@ -165,8 +168,8 @@ export default function BotLiveMonitor() {
                 <Metric label="Reserva mín." value={`€${minReservedQuote.toFixed(0)}`} />
                 <Metric label="Pares escaneados" value={scannedPairs.length || "—"} />
                 <Metric label="PnL día" value={`${dayPnl >= 0 ? "+" : ""}${dayPnl.toFixed(6)}`} tone={dayPnl < 0 ? "error" : "ok"} />
-                <Metric label="Señales nuevas" value={newSignals.length} tone={newSignals.length ? "ok" : "default"} />
-                <Metric label="Rechazadas" value={rejectedSignals.length} tone={rejectedSignals.length ? "warning" : "default"} />
+                <Metric label="Señales new" value={newSignals.length} tone={newSignals.length ? "ok" : "default"} />
+                <Metric label="Abiertas/cerradas" value={`${Number(cycleSummary.tradesOpened || 0)}/${Number(cycleSummary.tradesClosed || 0)}`} tone={Number(cycleSummary.tradesOpened || cycleSummary.tradesClosed || 0) ? "ok" : "default"} />
                 <Metric label="Ejecutadas" value={executedSignals.length} tone={executedSignals.length ? "ok" : "default"} />
                 <Metric label="Buscando" value={searchingBots.length} />
               </div>

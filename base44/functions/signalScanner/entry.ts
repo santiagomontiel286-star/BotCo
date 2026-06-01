@@ -1,9 +1,7 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.25';
 
 const KRAKEN_API = 'https://api.kraken.com';
-const EUR_PAIRS = ['ADAEUR', 'XRPEUR', 'DOTEUR', 'LINKEUR', 'ATOMEUR', 'SOLEUR', 'ETHEUR', 'XBTEUR'];
-const USD_PAIRS = ['ADAUSD', 'XRPUSD', 'DOTUSD', 'LINKUSD', 'ATOMUSD', 'SOLUSD', 'ETHUSD', 'XBTUSD'];
-const PAIRS = [...EUR_PAIRS, ...USD_PAIRS];
+const PAIRS = ['ADAEUR', 'XRPEUR', 'DOTEUR', 'LINKEUR', 'ATOMEUR', 'SOLEUR'];
 const QUOTE_KEYS = { USD: ['ZUSD', 'USD'], EUR: ['ZEUR', 'EUR'] };
 let lastNonce = 0;
 const publicCache = new Map();
@@ -176,9 +174,11 @@ Deno.serve(async (req) => {
 
     const entities = base44.asServiceRole.entities;
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + 3 * 60 * 1000).toISOString();
+    const intervalMinutes = Math.max(1, Number(Deno.env.get('BOTCO_AUTOTRADE_INTERVAL_MINUTES') || '1'));
+    const expiresMs = Math.max(3 * 60 * 1000, intervalMinutes * 2 * 60 * 1000);
+    const expiresAt = new Date(now.getTime() + expiresMs).toISOString();
     const maxQuote = Math.min(Number(Deno.env.get('MAX_LIVE_ORDER_QUOTE') || '8'), 8);
-    const minReserved = Number(Deno.env.get('MIN_RESERVED_QUOTE') || '2');
+    const minReserved = Math.max(Number(Deno.env.get('MIN_RESERVED_QUOTE') || '4'), 4);
     const liveAllowed = toBool(Deno.env.get('KRAKEN_LIVE_TRADING')) && toBool(Deno.env.get('BOTCO_LIVE_ENABLED'));
     const sessions = await entities.BotSession.filter({ active: true }, '-created_date', 5);
     const liveSession = sessions.find(session => session.mode === 'live');
@@ -213,29 +213,14 @@ Deno.serve(async (req) => {
       else rejected.push({ reason: result.reason?.message || 'error evaluando par' });
     }
 
-    for (const item of rejectedCandidates) {
-      const signal = await entities.Signal.create({
-        bot_name: item.bot.name,
-        bot_id: item.bot.id,
-        strategy: item.bot.strategy || item.bot.type,
-        exchange: 'kraken',
-        pair: item.pair,
-        side: 'hold',
-        confidence: 0,
-        score: 0,
-        reason: item.reason,
-        price: 0,
-        timeframe: '5m',
-        status: 'rejected',
-        expires_at: expiresAt,
-        raw_data: JSON.stringify({ scannedPairs: PAIRS, parallel: true, rejectedPair: item.pair, reason: item.reason })
-      });
-      created.push(signal);
-      rejected.push({ bot: item.bot.name, pair: item.pair, reason: item.reason });
-    }
+    rejected.push(...rejectedCandidates.map(item => ({ bot: item.bot.name, pair: item.pair, reason: item.reason })));
 
     const sorted = candidates.sort((a, b) => b.score - a.score);
     for (const item of sorted) {
+      if (item.status !== 'new' || item.technical.side !== 'buy') {
+        rejected.push({ bot: item.bot.name, pair: item.pair, reason: item.reason });
+        continue;
+      }
       const signal = await entities.Signal.create({
         bot_name: item.bot.name,
         bot_id: item.bot.id,
@@ -248,7 +233,7 @@ Deno.serve(async (req) => {
         reason: item.reason,
         price: item.ticker.price,
         timeframe: '5m',
-        status: item.status,
+        status: 'new',
         expires_at: expiresAt,
         min_required_quote: Number(item.minQuote.toFixed(8)),
         available_quote: Number(item.plan.balanceQuote.toFixed(8)),
@@ -258,18 +243,11 @@ Deno.serve(async (req) => {
         raw_data: JSON.stringify({ scannedPairs: PAIRS, parallel: true, ordermin: item.rules.ordermin, costmin: item.rules.costmin, lotDecimals: item.rules.lot_decimals, pairDecimals: item.rules.pair_decimals, avgQuoteVolume5m: item.liquidity.avgQuoteVolume, balanceQuote: item.plan.balanceQuote, exposureQuote: item.plan.exposure, maxQuote, minReserved })
       });
       created.push(signal);
-      if (item.status === 'rejected') rejected.push({ bot: item.bot.name, pair: item.pair, reason: signal.reason });
     }
 
-    const missingExecutable = bots.filter(bot => !created.some(signal => signal.bot_id === bot.id && signal.status === 'new'));
-    for (const bot of missingExecutable) {
-      const botRejected = rejected.slice(0, 12);
-      const signal = await entities.Signal.create({ bot_name: bot.name, bot_id: bot.id, strategy: bot.strategy || bot.type, exchange: 'kraken', pair: 'AUTO', side: 'hold', confidence: 0, score: 0, reason: 'Sin señal ejecutable: revisar motivos por par en raw_data', price: 0, timeframe: '5m', status: 'rejected', expires_at: expiresAt, raw_data: JSON.stringify({ scannedPairs: PAIRS, parallel: true, rejected: botRejected }) });
-      created.push(signal);
-    }
-
-    if (liveSession?.id) await entities.BotSession.update(liveSession.id, { last_tick_at: now.toISOString(), last_error: '' });
-    return Response.json({ ok: true, scannerTick: now.toISOString(), parallel: true, scannedPairs: PAIRS, scannedBots: bots.length, evaluations: settled.length, signalsCreated: created.length, signalsRejected: rejected.length, bestSignals: created.filter(signal => signal.status === 'new').slice(0, 5), reasons: rejected.slice(0, 20) });
+    const summary = { scannerTick: now.toISOString(), scannedPairs: PAIRS, scannedBots: bots.length, evaluations: settled.length, signalsCreated: created.length, rejectedSample: rejected.slice(0, 10) };
+    if (liveSession?.id) await entities.BotSession.update(liveSession.id, { last_scanner_at: now.toISOString(), last_cycle_summary: JSON.stringify(summary), last_error: created.length ? '' : (rejected[0]?.reason || '') });
+    return Response.json({ ok: true, scannerTick: now.toISOString(), parallel: true, scannedPairs: PAIRS, scannedBots: bots.length, evaluations: settled.length, signalsCreated: created.length, signalsRejected: rejected.length, bestSignals: created.slice(0, 5), reasons: rejected.slice(0, 10) });
   } catch (error) {
     return Response.json({ ok: false, error: error.message }, { status: 500 });
   }

@@ -20,7 +20,9 @@ export default function Bots() {
 
   const activeLiveSession = sessions.find(session => session.mode === "live");
   const liveBots = bots.filter(bot => bot.trading_mode === "live" && bot.live_enabled === true);
-  const lastTickAt = activeLiveSession?.last_tick_at || activeLiveSession?.started_at;
+  const lastTickAt = activeLiveSession?.last_execution_at || activeLiveSession?.last_tick_at || activeLiveSession?.started_at;
+  const intervalMinutes = Number(liveEnv?.intervalMinutes || 1);
+  const cronStale = activeLiveSession && (!lastTickAt || Date.now() - new Date(lastTickAt).getTime() > Math.max(intervalMinutes * 2, 2) * 60000);
   const totalRealPnl = openTrades.reduce((sum, trade) => sum + Number(trade.profit_loss || 0), 0);
 
   const refreshAll = () => {
@@ -57,7 +59,7 @@ export default function Bots() {
 
   const handleStopLive = () => runAction("Bots LIVE detenidos", () => base44.functions.invoke("stopLiveBots", { closeOpenTrades: false }));
   const handleCloseOpenTrades = () => runAction("Cierre de operaciones solicitado", () => base44.functions.invoke("tradingTick", { forceClose: true }));
-  const handleRunCycle = () => runAction("Ciclo LIVE ejecutado", () => base44.functions.invoke("tradingTick", { runOnce: true, autoMode: true }));
+  const handleRunCycle = () => runAction("Ciclo LIVE ejecutado", () => base44.functions.invoke("tradingLoop", { autoMode: true }));
 
   if (isLoading) {
     return <div className="flex items-center justify-center h-64"><div className="w-8 h-8 border-4 border-primary/30 border-t-primary rounded-full animate-spin" /></div>;
@@ -88,7 +90,7 @@ export default function Bots() {
           </div>
           {!liveEnv?.ok && <p className="text-[11px] text-muted-foreground mt-2">Revisa variables LIVE antes de operar.</p>}
         </div>
-        <div className="bg-card rounded-xl border border-border p-4"><span className="text-xs text-muted-foreground uppercase tracking-wider">Sesión activa</span><p className="text-xl font-mono font-bold text-foreground mt-1">{activeLiveSession ? "LIVE" : "—"}</p><p className="text-[11px] text-muted-foreground">Último tick: {lastTickAt ? new Date(lastTickAt).toLocaleTimeString("es-ES") : "—"}</p></div>
+        <div className="bg-card rounded-xl border border-border p-4"><span className="text-xs text-muted-foreground uppercase tracking-wider">Sesión activa</span><p className="text-xl font-mono font-bold text-foreground mt-1">{activeLiveSession ? "LIVE" : "—"}</p><p className="text-[11px] text-muted-foreground">Último tick: {lastTickAt ? new Date(lastTickAt).toLocaleTimeString("es-ES") : "—"}</p>{cronStale && <p className="text-[11px] text-chart-3 mt-1">Sin cron: pulsa Ejecutar ciclo ahora</p>}</div>
         <div className="bg-card rounded-xl border border-border p-4"><span className="text-xs text-muted-foreground uppercase tracking-wider">Bots LIVE</span><p className="text-xl font-mono font-bold text-primary mt-1">{liveBots.length}<span className="text-muted-foreground text-sm">/{bots.length}</span></p></div>
         <div className="bg-card rounded-xl border border-border p-4"><span className="text-xs text-muted-foreground uppercase tracking-wider">Operaciones abiertas</span><p className="text-xl font-mono font-bold text-foreground mt-1">{openTrades.length}</p><p className={cn("text-[11px]", totalRealPnl >= 0 ? "text-profit" : "text-loss")}>PnL registrado: {totalRealPnl.toFixed(6)}</p></div>
       </div>
@@ -96,7 +98,7 @@ export default function Bots() {
       <div className="bg-card rounded-xl border border-border p-5">
         <div className="flex items-center gap-2 mb-3"><Activity className="w-4 h-4 text-primary" /><h3 className="text-sm font-semibold text-foreground">Estado automático</h3></div>
         <div className="grid sm:grid-cols-3 gap-3 text-xs">
-          <div className="bg-muted/50 rounded-lg p-3"><span className="text-muted-foreground">Scheduler Base44</span><p className="font-semibold text-foreground mt-1">tradingTick cada {liveEnv?.intervalMinutes || 5} min</p></div>
+          <div className="bg-muted/50 rounded-lg p-3"><span className="text-muted-foreground">Scheduler Base44</span><p className={cn("font-semibold mt-1", cronStale ? "text-chart-3" : "text-foreground")}>{cronStale ? "Sin cron: pulsa Ejecutar ciclo ahora" : `tradingLoop cada ${liveEnv?.intervalMinutes || 1} min`}</p></div>
           <div className="bg-muted/50 rounded-lg p-3"><span className="text-muted-foreground">Máx. por orden</span><p className="font-semibold text-foreground mt-1">{liveEnv?.maxQuote || 10} USD/EUR</p></div>
           <div className="bg-muted/50 rounded-lg p-3"><span className="text-muted-foreground">Kraken</span><p className="font-semibold text-foreground mt-1">Spot · sin leverage · sin margin · sin futures</p></div>
         </div>

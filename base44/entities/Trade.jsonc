@@ -38,6 +38,40 @@
     "exit_price": {
       "type": "number"
     },
+    "executed_price": {
+      "type": "number"
+    },
+    "executed_volume": {
+      "type": "number"
+    },
+    "fee": {
+      "type": "number",
+      "default": 0
+    },
+    "cost": {
+      "type": "number",
+      "default": 0
+    },
+    "txid": {
+      "type": "string"
+    },
+    "close_executed_price": {
+      "type": "number"
+    },
+    "close_executed_volume": {
+      "type": "number"
+    },
+    "close_fee": {
+      "type": "number",
+      "default": 0
+    },
+    "close_cost": {
+      "type": "number",
+      "default": 0
+    },
+    "close_txid": {
+      "type": "string"
+    },
     "amount": {
       "type": "number"
     },
@@ -90,6 +124,9 @@
       "type": "string"
     },
     "closed_by_tick_id": {
+      "type": "string"
+    },
+    "last_error": {
       "type": "string"
     },
     "notes": {
