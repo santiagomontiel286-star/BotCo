@@ -174,9 +174,9 @@ async function chooseBestQuoteCurrency(bot, balances, maxQuote) {
   for (const pair of ordered) {
     const quote = quoteCurrency(pair);
     const available = getBalanceAmount(balances, quote);
-    if (available >= maxQuote) return { pair, quote, available };
+    if (available > 0) return { pair, quote, available, orderQuote: Math.min(maxQuote, available) };
   }
-  return { error: `Balance insuficiente: se necesitan al menos ${maxQuote} USD/EUR disponibles para BTC o ETH` };
+  return { error: 'No hay saldo USD/EUR disponible en Kraken para operar BTC o ETH' };
 }
 
 async function placeMarketOrder(pair, side, volume) {
@@ -321,7 +321,7 @@ Deno.serve(async (req) => {
 
     const nowIso = new Date().toISOString();
     const results = [];
-    const balances = await getBalances();
+    let balances = await getBalances();
     let openTrades = await entities.Trade.filter({ mode: 'live', status: 'open' }, '-created_date', 50);
 
     for (const trade of openTrades) {
@@ -369,8 +369,9 @@ Deno.serve(async (req) => {
           if (maxQuote > 25) throw new Error('max_order_quote supera 25; bot bloqueado');
           const choice = await chooseBestQuoteCurrency(bot, balances, maxQuote);
           if (choice.error) throw new Error(choice.error);
+          const orderQuote = choice.orderQuote;
           const ticker = await getCurrentPrice(choice.pair);
-          const risk = await riskCheck(entities, bot, liveSession, choice.pair, balances, maxQuote, openTrades);
+          const risk = await riskCheck(entities, bot, liveSession, choice.pair, balances, orderQuote, openTrades);
           if (!risk.ok) {
             await entities.Bot.update(bot.id, { last_run_at: nowIso, last_signal: `skip: ${risk.reason}`, last_error: '' });
             results.push({ action: 'skip', bot: bot.name, pair: displayPair(choice.pair), reason: risk.reason });
@@ -383,7 +384,7 @@ Deno.serve(async (req) => {
             continue;
           }
           const rules = await getAssetPairRules(choice.pair);
-          const volume = calculateValidVolume(maxQuote, ticker.price, rules);
+          const volume = calculateValidVolume(orderQuote, ticker.price, rules);
           if (!volume.ok) {
             await entities.Bot.update(bot.id, { last_run_at: nowIso, last_signal: `skip: ${volume.reason}`, last_error: '' });
             await createAlert(entities, 'Capital insuficiente para orden LIVE', `${bot.name} ${displayPair(choice.pair)}: ${volume.reason}`, 'warning');
@@ -411,12 +412,13 @@ Deno.serve(async (req) => {
             fees: 0,
             raw_response: JSON.stringify(orderResponse),
             opened_by_tick_id: id,
-            notes: `LIVE spot market buy · max ${maxQuote} ${choice.quote} · sin leverage/margin/futuros`,
+            notes: `LIVE spot market buy · usado ${orderQuote.toFixed(2)} ${choice.quote} disponible · máximo permitido ${maxQuote} · sin leverage/margin/futuros`,
           });
           await entities.Bot.update(bot.id, { trades_count: Number(bot.trades_count || 0) + 1, last_run_at: nowIso, last_order_at: nowIso, last_signal: `opened: ${signal.reason}`, last_error: '' });
           await createAlert(entities, 'Orden LIVE abierta', `${bot.name} abrió ${displayPair(choice.pair)} por ~${volume.cost.toFixed(2)} ${choice.quote}`, 'success');
           openTrades.push(trade);
-          results.push({ action: 'opened', tradeId: trade.id, bot: bot.name, pair: displayPair(choice.pair), entryPrice: ticker.price, volume: volume.volume, exchangeOrderId, confidence: signal.confidence, rawResponse: orderResponse });
+          balances = await getBalances();
+          results.push({ action: 'opened', tradeId: trade.id, bot: bot.name, pair: displayPair(choice.pair), entryPrice: ticker.price, quoteUsed: orderQuote, quoteCurrency: choice.quote, volume: volume.volume, exchangeOrderId, confidence: signal.confidence, rawResponse: orderResponse });
         } catch (error) {
           await entities.Bot.update(bot.id, { last_run_at: nowIso, last_error: error.message });
           await createAlert(entities, 'Error LIVE crítico', `${bot.name}: ${error.message}`, 'critical');
