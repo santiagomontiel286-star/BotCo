@@ -1,8 +1,28 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.25';
 
 const KRAKEN_API = 'https://api.kraken.com';
-const SUPPORTED_PAIRS = ['XBTUSD', 'XBTEUR', 'ETHUSD', 'ETHEUR'];
+const SUPPORTED_PAIRS = ['ETHEUR', 'ETHUSD', 'SOLEUR', 'SOLUSD', 'XRPEUR', 'XRPUSD', 'ADAEUR', 'ADAUSD', 'XBTEUR', 'XBTUSD'];
+const LOW_CAPITAL_ASSETS = ['ETH', 'SOL', 'XRP', 'ADA', 'BTC'];
 const QUOTE_KEYS = { USD: ['ZUSD', 'USD'], EUR: ['ZEUR', 'EUR'] };
+const ASSET_KEYS = {
+  XBT: ['XXBT', 'XBT', 'BTC'],
+  ETH: ['XETH', 'ETH'],
+  SOL: ['SOL'],
+  XRP: ['XXRP', 'XRP'],
+  ADA: ['ADA'],
+};
+const DISPLAY_PAIRS = {
+  XBTUSD: 'BTC/USD',
+  XBTEUR: 'BTC/EUR',
+  ETHUSD: 'ETH/USD',
+  ETHEUR: 'ETH/EUR',
+  SOLUSD: 'SOL/USD',
+  SOLEUR: 'SOL/EUR',
+  XRPUSD: 'XRP/USD',
+  XRPEUR: 'XRP/EUR',
+  ADAUSD: 'ADA/USD',
+  ADAEUR: 'ADA/EUR',
+};
 let lastNonce = 0;
 
 function nextNonce() {
@@ -94,15 +114,17 @@ function normalizePair(pair) {
 
 function displayPair(pair) {
   const value = normalizePair(pair);
-  if (value === 'XBTUSD') return 'BTC/USD';
-  if (value === 'XBTEUR') return 'BTC/EUR';
-  if (value === 'ETHUSD') return 'ETH/USD';
-  if (value === 'ETHEUR') return 'ETH/EUR';
-  return value;
+  return DISPLAY_PAIRS[value] || value;
 }
 
 function baseAsset(pair) {
-  return normalizePair(pair).startsWith('XBT') ? 'XBT' : 'ETH';
+  const value = normalizePair(pair);
+  if (value.startsWith('XBT')) return 'XBT';
+  if (value.startsWith('ETH')) return 'ETH';
+  if (value.startsWith('SOL')) return 'SOL';
+  if (value.startsWith('XRP')) return 'XRP';
+  if (value.startsWith('ADA')) return 'ADA';
+  return 'ETH';
 }
 
 function quoteCurrency(pair) {
@@ -114,9 +136,7 @@ function getBalanceAmount(balances, currency) {
 }
 
 function getAssetBalance(balances, asset) {
-  if (asset === 'XBT') return Number(balances.XXBT || balances.XBT || balances.BTC || 0);
-  if (asset === 'ETH') return Number(balances.XETH || balances.ETH || 0);
-  return 0;
+  return (ASSET_KEYS[asset] || [asset]).reduce((sum, key) => sum + Number(balances[key] || 0), 0);
 }
 
 async function getBalances() {
@@ -167,16 +187,74 @@ function calculateValidVolume(maxQuote, price, rules) {
   return { ok: true, volume, cost };
 }
 
+function pairForAsset(asset, quote) {
+  return asset === 'BTC' ? `XBT${quote}` : `${asset}${quote}`;
+}
+
+async function inspectTradablePair(pair, balanceQuote, maxQuote) {
+  const rules = await getAssetPairRules(pair);
+  const ticker = await getCurrentPrice(pair);
+  const orderQuote = Math.min(maxQuote, balanceQuote);
+  const calculated = calculateValidVolume(orderQuote, ticker.price, rules);
+  const minVolume = Number(rules.ordermin || 0);
+  const minCost = Math.max(Number(rules.costmin || 0), minVolume * ticker.price);
+  const missingCapital = Math.max(0, minCost - orderQuote);
+  return {
+    pair: normalizePair(pair),
+    selectedPair: displayPair(pair),
+    quote: quoteCurrency(pair),
+    balanceQuote,
+    orderQuote,
+    minVolume,
+    minCost: Number(minCost.toFixed(8)),
+    calculatedVolume: calculated.volume,
+    calculatedCost: Number((calculated.cost || 0).toFixed(8)),
+    missingCapital: Number(missingCapital.toFixed(8)),
+    operable: calculated.ok && missingCapital <= 0,
+    reason: calculated.ok ? 'Par operable con el saldo disponible' : calculated.reason,
+  };
+}
+
 async function chooseBestQuoteCurrency(bot, balances, maxQuote) {
-  const requested = (bot.pairs?.length ? bot.pairs : SUPPORTED_PAIRS).map(normalizePair).filter(pair => SUPPORTED_PAIRS.includes(pair));
-  const preferred = requested.length ? requested : SUPPORTED_PAIRS;
-  const ordered = [...preferred, ...SUPPORTED_PAIRS.filter(pair => !preferred.includes(pair))];
-  for (const pair of ordered) {
-    const quote = quoteCurrency(pair);
-    const available = getBalanceAmount(balances, quote);
-    if (available > 0) return { pair, quote, available, orderQuote: Math.min(maxQuote, available) };
+  const eurBalance = getBalanceAmount(balances, 'EUR');
+  const usdBalance = getBalanceAmount(balances, 'USD');
+  const quote = eurBalance > 0 ? 'EUR' : usdBalance > 0 ? 'USD' : null;
+  if (!quote) {
+    return { error: 'LIVE bloqueado: no hay saldo EUR/USD disponible', reason: 'No hay saldo EUR/USD disponible', balanceQuote: 0 };
   }
-  return { error: 'No hay saldo USD/EUR disponible en Kraken para operar BTC o ETH' };
+
+  const balanceQuote = quote === 'EUR' ? eurBalance : usdBalance;
+  const inspected = [];
+  for (const asset of LOW_CAPITAL_ASSETS) {
+    const pair = pairForAsset(asset, quote);
+    if (!SUPPORTED_PAIRS.includes(pair)) continue;
+    try {
+      inspected.push(await inspectTradablePair(pair, balanceQuote, maxQuote));
+    } catch (error) {
+      inspected.push({ pair, selectedPair: displayPair(pair), quote, balanceQuote, operable: false, reason: `Par no disponible en Kraken: ${error.message}` });
+    }
+  }
+
+  const operable = inspected.filter(item => item.operable).sort((a, b) => a.minCost - b.minCost);
+  if (operable.length) {
+    return { ...operable[0], reason: `Seleccionado automáticamente por menor coste mínimo compatible: ${operable[0].selectedPair}` };
+  }
+
+  const validMinimums = inspected.filter(item => Number(item.minCost || 0) > 0).sort((a, b) => a.missingCapital - b.missingCapital);
+  const closest = validMinimums[0];
+  if (!closest) return { error: 'LIVE bloqueado: no hay pares compatibles disponibles en Kraken', reason: 'No hay pares compatibles disponibles en Kraken', quote, balanceQuote, attemptedPairs: inspected };
+  return {
+    error: `LIVE bloqueado: capital inferior al mínimo del par. Faltan ${closest.missingCapital.toFixed(2)} ${quote}`,
+    reason: `Capital inferior al mínimo del par más accesible (${closest.selectedPair}). Faltan ${closest.missingCapital.toFixed(2)} ${quote}`,
+    selectedPair: closest.selectedPair,
+    quote,
+    balanceQuote,
+    minVolume: closest.minVolume,
+    minCost: closest.minCost,
+    calculatedVolume: closest.calculatedVolume,
+    missingCapital: closest.missingCapital,
+    attemptedPairs: inspected,
+  };
 }
 
 async function placeMarketOrder(pair, side, volume) {
@@ -368,19 +446,23 @@ Deno.serve(async (req) => {
           const maxQuote = Math.min(Number(bot.max_order_quote || bot.max_order_usd || env.maxQuote), env.maxQuote);
           if (maxQuote > 25) throw new Error('max_order_quote supera 25; bot bloqueado');
           const choice = await chooseBestQuoteCurrency(bot, balances, maxQuote);
-          if (choice.error) throw new Error(choice.error);
+          if (choice.error) {
+            await entities.Bot.update(bot.id, { last_run_at: nowIso, last_signal: `LIVE bloqueado: ${choice.reason}`, last_error: '' });
+            results.push({ action: 'skip', bot: bot.name, selectedPair: choice.selectedPair || null, balanceQuote: choice.balanceQuote || 0, minVolume: choice.minVolume || null, minCost: choice.minCost || null, calculatedVolume: choice.calculatedVolume || null, reason: choice.reason, missingCapital: choice.missingCapital || null, attemptedPairs: choice.attemptedPairs || [] });
+            continue;
+          }
           const orderQuote = choice.orderQuote;
           const ticker = await getCurrentPrice(choice.pair);
           const risk = await riskCheck(entities, bot, liveSession, choice.pair, balances, orderQuote, openTrades);
           if (!risk.ok) {
             await entities.Bot.update(bot.id, { last_run_at: nowIso, last_signal: `skip: ${risk.reason}`, last_error: '' });
-            results.push({ action: 'skip', bot: bot.name, pair: displayPair(choice.pair), reason: risk.reason });
+            results.push({ action: 'skip', bot: bot.name, selectedPair: choice.selectedPair, balanceQuote: choice.balanceQuote, minVolume: choice.minVolume, minCost: choice.minCost, calculatedVolume: choice.calculatedVolume, reason: risk.reason });
             continue;
           }
           const signal = await evaluateStrategy(bot, choice.pair, ticker);
           if (signal.action !== 'buy') {
             await entities.Bot.update(bot.id, { last_run_at: nowIso, last_signal: signal.reason, last_error: '' });
-            results.push({ action: 'skip', bot: bot.name, pair: displayPair(choice.pair), reason: signal.reason, confidence: signal.confidence });
+            results.push({ action: 'skip', bot: bot.name, selectedPair: choice.selectedPair, balanceQuote: choice.balanceQuote, minVolume: choice.minVolume, minCost: choice.minCost, calculatedVolume: choice.calculatedVolume, reason: signal.reason, confidence: signal.confidence });
             continue;
           }
           const rules = await getAssetPairRules(choice.pair);
@@ -388,7 +470,7 @@ Deno.serve(async (req) => {
           if (!volume.ok) {
             await entities.Bot.update(bot.id, { last_run_at: nowIso, last_signal: `skip: ${volume.reason}`, last_error: '' });
             await createAlert(entities, 'Capital insuficiente para orden LIVE', `${bot.name} ${displayPair(choice.pair)}: ${volume.reason}`, 'warning');
-            results.push({ action: 'skip', bot: bot.name, pair: displayPair(choice.pair), reason: volume.reason });
+            results.push({ action: 'skip', bot: bot.name, selectedPair: choice.selectedPair, balanceQuote: choice.balanceQuote, minVolume: choice.minVolume, minCost: choice.minCost, calculatedVolume: volume.volume, reason: volume.reason, missingCapital: Math.max(0, choice.minCost - orderQuote) });
             continue;
           }
           const orderResponse = await placeMarketOrder(choice.pair, 'buy', volume.volume);
@@ -418,7 +500,7 @@ Deno.serve(async (req) => {
           await createAlert(entities, 'Orden LIVE abierta', `${bot.name} abrió ${displayPair(choice.pair)} por ~${volume.cost.toFixed(2)} ${choice.quote}`, 'success');
           openTrades.push(trade);
           balances = await getBalances();
-          results.push({ action: 'opened', tradeId: trade.id, bot: bot.name, pair: displayPair(choice.pair), entryPrice: ticker.price, quoteUsed: orderQuote, quoteCurrency: choice.quote, volume: volume.volume, exchangeOrderId, confidence: signal.confidence, rawResponse: orderResponse });
+          results.push({ action: 'opened', tradeId: trade.id, bot: bot.name, selectedPair: choice.selectedPair, balanceQuote: choice.balanceQuote, minVolume: choice.minVolume, minCost: choice.minCost, calculatedVolume: volume.volume, entryPrice: ticker.price, quoteUsed: orderQuote, quoteCurrency: choice.quote, exchangeOrderId, confidence: signal.confidence, reason: signal.reason, rawResponse: orderResponse });
         } catch (error) {
           await entities.Bot.update(bot.id, { last_run_at: nowIso, last_error: error.message });
           await createAlert(entities, 'Error LIVE crítico', `${bot.name}: ${error.message}`, 'critical');

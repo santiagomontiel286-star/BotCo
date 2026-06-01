@@ -32,13 +32,16 @@ export default function BotCard({ bot, onStart, onPause, onStop, onModeChange, c
   const netPnl = krakenTrades.length > 0 ? krakenTrades.reduce((s, t) => s + (t.net || 0), 0) * alloc / 100 : null;
   const profitPositive = netPnl !== null ? netPnl >= 0 : (bot.profit || 0) >= 0;
   const cooldownActive = bot.cooldown_until && new Date(bot.cooldown_until).getTime() > Date.now();
+  const capitalBlocked = isLive && liveEnabled && String(bot.last_signal || bot.last_error || '').toLowerCase().includes('capital inferior al mínimo');
+  const statusLabel = capitalBlocked ? 'LIVE BLOQUEADO' : isLive && liveEnabled ? 'LIVE ON' : bot.status;
+  const statusClass = capitalBlocked ? 'bg-chart-3/20 text-chart-3' : isLive && liveEnabled ? 'bg-destructive/20 text-destructive' : statusColors[bot.status];
 
   if (compact) {
     return (
       <div className="bg-card rounded-xl border border-border p-4 hover:border-primary/20 transition-all">
         <div className="flex items-center justify-between mb-2">
           <span className="text-sm font-semibold text-foreground">{bot.name}</span>
-          <span className={cn("text-[10px] px-2 py-0.5 rounded-full font-medium uppercase tracking-wider", isLive && liveEnabled ? "bg-destructive/20 text-destructive" : statusColors[bot.status])}>{isLive && liveEnabled ? "LIVE" : bot.status}</span>
+          <span className={cn("text-[10px] px-2 py-0.5 rounded-full font-medium uppercase tracking-wider", statusClass)}>{capitalBlocked ? "BLOQUEADO" : isLive && liveEnabled ? "LIVE" : bot.status}</span>
         </div>
         <div className="flex items-center justify-between">
           {netPnl !== null ? <span className={cn("text-sm font-mono font-bold", profitPositive ? "text-profit" : "text-loss")}>{netPnl >= 0 ? "+" : ""}{netPnl.toFixed(2)} USD</span> : <span className="text-xs text-muted-foreground">Sin datos reales</span>}
@@ -55,9 +58,9 @@ export default function BotCard({ bot, onStart, onPause, onStop, onModeChange, c
           <h3 className="font-semibold text-foreground">{bot.name}</h3>
           <p className="text-xs text-muted-foreground">{typeLabels[bot.type]}</p>
         </div>
-        <span className={cn("text-[10px] px-2.5 py-1 rounded-full font-medium uppercase tracking-wider", isLive && liveEnabled ? "bg-destructive/20 text-destructive" : statusColors[bot.status])}>
-          {isActive && <span className="inline-block w-1.5 h-1.5 rounded-full bg-current mr-1.5 animate-pulse" />}
-          {isLive && liveEnabled ? "LIVE ON" : bot.status}
+        <span className={cn("text-[10px] px-2.5 py-1 rounded-full font-medium uppercase tracking-wider", statusClass)}>
+          {isActive && !capitalBlocked && <span className="inline-block w-1.5 h-1.5 rounded-full bg-current mr-1.5 animate-pulse" />}
+          {statusLabel}
         </span>
       </div>
 
