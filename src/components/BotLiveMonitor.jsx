@@ -36,6 +36,15 @@ function statusDot(status) {
   return "bg-primary";
 }
 
+function parseRawData(value) {
+  if (!value) return {};
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+}
+
 export default function BotLiveMonitor() {
   const [open, setOpen] = useState(() => {
     if (typeof window === "undefined") return true;
@@ -48,7 +57,7 @@ export default function BotLiveMonitor() {
   const { data: bots = [] } = useQuery({ queryKey: ["bots"], queryFn: () => base44.entities.Bot.list(), refetchInterval: REFRESH_MS });
   const { data: trades = [] } = useQuery({ queryKey: ["monitor-trades"], queryFn: () => base44.entities.Trade.list("-created_date", 20), refetchInterval: REFRESH_MS });
   const { data: alerts = [] } = useQuery({ queryKey: ["monitor-alerts"], queryFn: () => base44.entities.Alert.list("-created_date", 10), refetchInterval: REFRESH_MS });
-  const { data: signals = [] } = useQuery({ queryKey: ["monitor-signals"], queryFn: () => base44.entities.Signal.list("-created_date", 20), refetchInterval: REFRESH_MS });
+  const { data: signals = [] } = useQuery({ queryKey: ["monitor-signals"], queryFn: () => base44.entities.Signal.list("-created_date", 50), refetchInterval: REFRESH_MS });
   const { data: sessions = [] } = useQuery({ queryKey: ["botSessionsLive"], queryFn: () => base44.entities.BotSession.filter({ active: true }), refetchInterval: REFRESH_MS });
   const { data: health } = useQuery({
     queryKey: ["liveEnvStatus"],
@@ -67,9 +76,15 @@ export default function BotLiveMonitor() {
   const openTrades = trades.filter(trade => trade.status === "open");
   const latestTrade = trades[0];
   const latestSignal = signals[0];
+  const latestRaw = parseRawData(latestSignal?.raw_data);
+  const scannedPairs = latestRaw.scannedPairs || health?.supportedPairs || [];
   const newSignals = signals.filter(signal => signal.status === "new");
   const rejectedSignals = signals.filter(signal => signal.status === "rejected");
   const executedSignals = signals.filter(signal => signal.status === "executed");
+  const bestSignals = [...newSignals].sort((a, b) => Number(b.score || 0) - Number(a.score || 0)).slice(0, 4);
+  const maxOpenTrades = Number(health?.maxOpenTrades || health?.env?.maxOpenTrades || 3);
+  const minReservedQuote = Number(health?.minReservedQuote || health?.env?.minReservedQuote || 2);
+  const minCapitalRows = signals.filter(signal => Number(signal.min_required_quote || 0) > 0).slice(0, 5);
   const searchingBots = activeBots.filter(bot => !blockedBots.some(blocked => blocked.id === bot.id));
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -145,8 +160,10 @@ export default function BotLiveMonitor() {
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <Metric label="Bots activos" value={activeBots.length} />
                 <Metric label="Bloqueados" value={blockedBots.length} tone={blockedBots.length ? "warning" : "default"} />
-                <Metric label="Ops abiertas" value={openTrades.length} />
+                <Metric label="Ops abiertas" value={`${openTrades.length}/${maxOpenTrades}`} tone={openTrades.length >= maxOpenTrades ? "warning" : "default"} />
                 <Metric label="Capital Kraken" value={loadingKraken ? "…" : `$${Number(totalUSD || 0).toFixed(2)}`} />
+                <Metric label="Reserva mín." value={`€${minReservedQuote.toFixed(0)}`} />
+                <Metric label="Pares escaneados" value={scannedPairs.length || "—"} />
                 <Metric label="PnL día" value={`${dayPnl >= 0 ? "+" : ""}${dayPnl.toFixed(6)}`} tone={dayPnl < 0 ? "error" : "ok"} />
                 <Metric label="Señales nuevas" value={newSignals.length} tone={newSignals.length ? "ok" : "default"} />
                 <Metric label="Rechazadas" value={rejectedSignals.length} tone={rejectedSignals.length ? "warning" : "default"} />
@@ -154,6 +171,15 @@ export default function BotLiveMonitor() {
                 <Metric label="Buscando" value={searchingBots.length} />
               </div>
             </section>
+
+            {bestSignals.length > 0 && (
+              <section className="space-y-2">
+                <div className="text-xs font-semibold text-foreground">Mejores señales actuales</div>
+                {bestSignals.map(signal => (
+                  <SignalCard key={signal.id} signal={signal} />
+                ))}
+              </section>
+            )}
 
             {signals.length > 0 && (
               <section className="space-y-2">
@@ -165,6 +191,31 @@ export default function BotLiveMonitor() {
                       <Badge tone={signal.status === "executed" ? "ok" : signal.status === "rejected" || signal.status === "expired" ? "error" : "default"}>{signal.status}</Badge>
                     </div>
                     <p className="mt-1 font-mono text-[10px] text-primary">{signal.side} · {signal.pair} · score {Number(signal.score || 0).toFixed(0)} · conf {Number(signal.confidence || 0).toFixed(2)}</p>
+                    <p className="mt-1 font-mono text-[10px] text-muted-foreground">mín {Number(signal.min_required_quote || 0).toFixed(2)} · disp {Number(signal.available_quote || 0).toFixed(2)} · spread {Number(signal.spread_pct || 0).toFixed(3)}%</p>
+                    <p className="mt-1 text-[10px] text-muted-foreground line-clamp-2">{signal.reason || "Sin motivo"}</p>
+                  </div>
+                ))}
+              </section>
+            )}
+
+            {minCapitalRows.length > 0 && (
+              <section className="space-y-2">
+                <div className="text-xs font-semibold text-foreground">Capital mínimo por par</div>
+                {minCapitalRows.map(signal => (
+                  <div key={`min-${signal.id}`} className="flex items-center justify-between rounded-lg bg-muted/25 p-2 text-xs">
+                    <span className="font-mono text-foreground">{signal.pair}</span>
+                    <span className="text-muted-foreground">mín {Number(signal.min_required_quote || 0).toFixed(2)} · disp {Number(signal.available_quote || 0).toFixed(2)}</span>
+                  </div>
+                ))}
+              </section>
+            )}
+
+            {rejectedSignals.length > 0 && (
+              <section className="space-y-2">
+                <div className="text-xs font-semibold text-foreground">Últimos rechazos</div>
+                {rejectedSignals.slice(0, 3).map(signal => (
+                  <div key={`rej-${signal.id}`} className="rounded-lg border border-chart-3/20 bg-chart-3/10 p-2 text-xs">
+                    <p className="font-mono text-chart-3">{signal.bot_name} · {signal.pair}</p>
                     <p className="mt-1 text-[10px] text-muted-foreground line-clamp-2">{signal.reason || "Sin motivo"}</p>
                   </div>
                 ))}
@@ -221,6 +272,20 @@ function Metric({ label, value, tone = "default" }) {
   return <div className="rounded-xl border border-border/40 bg-muted/30 p-2.5"><p className="text-[10px] text-muted-foreground">{label}</p><p className={cn("mt-0.5 truncate font-mono text-xs font-bold", tone === "warning" ? "text-chart-3" : tone === "error" ? "text-destructive" : tone === "ok" ? "text-primary" : "text-foreground")}>{value}</p></div>;
 }
 
+function SignalCard({ signal }) {
+  return (
+    <div className="rounded-xl border border-primary/25 bg-primary/5 p-3 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-semibold text-foreground truncate">{signal.bot_name}</span>
+        <Badge tone="ok">score {Number(signal.score || 0).toFixed(0)}</Badge>
+      </div>
+      <p className="mt-1 font-mono text-[10px] text-primary">{signal.side} · {signal.pair} · conf {Number(signal.confidence || 0).toFixed(2)}</p>
+      <p className="mt-1 font-mono text-[10px] text-muted-foreground">mín {Number(signal.min_required_quote || 0).toFixed(2)} · disp {Number(signal.available_quote || 0).toFixed(2)} · orden {Number(signal.order_quote || 0).toFixed(2)}</p>
+      <p className="mt-1 text-[10px] text-muted-foreground line-clamp-2">{signal.reason || "Sin motivo"}</p>
+    </div>
+  );
+}
+
 function Badge({ children, tone = "default" }) {
-  return <span className={cn("rounded-md px-1.5 py-0.5 text-[10px] font-medium", tone === "error" ? "bg-destructive/15 text-destructive" : "bg-background/60 text-muted-foreground border border-border/40")}>{children}</span>;
+  return <span className={cn("rounded-md px-1.5 py-0.5 text-[10px] font-medium", tone === "ok" ? "bg-primary/15 text-primary" : tone === "error" ? "bg-destructive/15 text-destructive" : "bg-background/60 text-muted-foreground border border-border/40")}>{children}</span>;
 }

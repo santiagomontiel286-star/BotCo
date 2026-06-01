@@ -1,7 +1,9 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.25';
 
 const KRAKEN_API = 'https://api.kraken.com';
-const PAIRS = ['XBTEUR', 'XBTUSD', 'ETHEUR', 'ETHUSD', 'SOLEUR', 'SOLUSD', 'XRPEUR', 'XRPUSD', 'ADAEUR', 'ADAUSD'];
+const EUR_PAIRS = ['ADAEUR', 'XRPEUR', 'DOTEUR', 'LINKEUR', 'ATOMEUR', 'SOLEUR', 'ETHEUR', 'XBTEUR'];
+const USD_PAIRS = ['ADAUSD', 'XRPUSD', 'DOTUSD', 'LINKUSD', 'ATOMUSD', 'SOLUSD', 'ETHUSD', 'XBTUSD'];
+const PAIRS = [...EUR_PAIRS, ...USD_PAIRS];
 const QUOTE_KEYS = { USD: ['ZUSD', 'USD'], EUR: ['ZEUR', 'EUR'] };
 let lastNonce = 0;
 const publicCache = new Map();
@@ -11,7 +13,7 @@ function nextNonce() { const now = Date.now() * 1000; lastNonce = Math.max(now, 
 function normalizePair(pair) { const value = String(pair || '').replace('/', '').toUpperCase(); if (value === 'BTCUSD') return 'XBTUSD'; if (value === 'BTCEUR') return 'XBTEUR'; return value; }
 function quoteCurrency(pair) { return normalizePair(pair).endsWith('EUR') ? 'EUR' : 'USD'; }
 function getBalanceAmount(balances, currency) { return (QUOTE_KEYS[currency] || [currency]).reduce((sum, key) => sum + Number(balances[key] || 0), 0); }
-function minScore(profile) { return profile === 'agresivo' ? 30 : profile === 'balanceado' ? 25 : 20; }
+function roundDown(value, decimals) { const factor = 10 ** decimals; return Math.floor(value * factor) / factor; }
 function ema(values, period) { if (values.length < period) return values[values.length - 1] || 0; const k = 2 / (period + 1); return values.slice(1).reduce((prev, value) => value * k + prev * (1 - k), values[0]); }
 function rsi(values, period = 14) { if (values.length <= period) return 50; const slice = values.slice(-period - 1); let gains = 0; let losses = 0; for (let i = 1; i < slice.length; i++) { const diff = slice[i] - slice[i - 1]; if (diff >= 0) gains += diff; else losses += Math.abs(diff); } if (losses === 0) return 100; const rs = gains / losses; return 100 - (100 / (1 + rs)); }
 
@@ -43,7 +45,7 @@ async function krakenPrivate(endpoint, params = {}) {
 
 async function krakenPublic(endpoint, params = {}) {
   const cacheKey = `${endpoint}:${JSON.stringify(params)}`;
-  const ttlMs = endpoint === 'AssetPairs' ? 30 * 60 * 1000 : 12000;
+  const ttlMs = endpoint === 'AssetPairs' ? 30 * 60 * 1000 : 10000;
   const cached = publicCache.get(cacheKey);
   if (cached && Date.now() - cached.at < ttlMs) return cached.result;
   const url = new URL(`${KRAKEN_API}/0/public/${endpoint}`);
@@ -55,51 +57,50 @@ async function krakenPublic(endpoint, params = {}) {
   return json.result;
 }
 
-async function getCurrentPrice(pair) {
+async function getTicker(pair) {
   const result = await krakenPublic('Ticker', { pair: normalizePair(pair) });
   const key = Object.keys(result)[0];
   const ticker = result[key];
   const ask = Number(ticker.a?.[0] || 0);
   const bid = Number(ticker.b?.[0] || 0);
   const price = Number(ticker.c?.[0] || 0);
-  return { price, bid, ask, spreadPct: price ? ((ask - bid) / price) * 100 : 999 };
+  const volume24h = Number(ticker.v?.[1] || 0);
+  if (!ask || !bid || !price || ask <= bid) throw new Error('ticker inválido');
+  return { price, bid, ask, spreadPct: ((ask - bid) / price) * 100, volume24h };
 }
 
 async function getAssetPairRules(pair) {
   const result = await krakenPublic('AssetPairs', { pair: normalizePair(pair) });
   const key = Object.keys(result)[0];
   const raw = result[key] || {};
-  return { ordermin: Number(raw.ordermin || 0), costmin: Number(raw.costmin || 0), lot_decimals: Number(raw.lot_decimals ?? 8) };
+  return { ordermin: Number(raw.ordermin || 0), costmin: Number(raw.costmin || 0), lot_decimals: Number(raw.lot_decimals ?? 8), pair_decimals: Number(raw.pair_decimals ?? 2) };
 }
 
-async function getCandles(pair, interval = 1) {
+async function getCandles(pair, interval = 5) {
   const result = await krakenPublic('OHLC', { pair: normalizePair(pair), interval });
   const key = Object.keys(result).find(item => item !== 'last');
-  return (result[key] || []).slice(-60).map(row => ({ time: Number(row[0]), open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]), volume: Number(row[6]) }));
+  return (result[key] || []).slice(-72).map(row => ({ time: Number(row[0]), open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]), volume: Number(row[6]) }));
 }
 
-async function chooseTradablePair(balances, maxQuote) {
-  const rejected = [];
-  for (const pair of PAIRS) {
-    try {
-      const quote = quoteCurrency(pair);
-      const balanceQuote = getBalanceAmount(balances, quote);
-      if (balanceQuote <= 0) { rejected.push({ pair, reason: `Sin saldo ${quote}` }); continue; }
-      const ticker = await getCurrentPrice(pair);
-      const rules = await getAssetPairRules(pair);
-      const orderQuote = Math.min(maxQuote, balanceQuote);
-      const volume = orderQuote / ticker.price;
-      const minCost = Math.max(rules.costmin || 0, (rules.ordermin || 0) * ticker.price);
-      if (orderQuote < minCost || volume < rules.ordermin) { rejected.push({ pair, reason: `capital insuficiente para par: mínimo ${minCost.toFixed(4)} ${quote}` }); continue; }
-      return { pair, ticker, rules, orderQuote, balanceQuote, rejected };
-    } catch (error) {
-      rejected.push({ pair, reason: error.message });
-    }
-  }
-  return { rejected };
+function minRequiredQuote(rules, price) {
+  return Math.max(Number(rules.costmin || 0), Number(rules.ordermin || 0) * price);
 }
 
-function evaluateBot(bot, candles, ticker) {
+function quoteExposure(openTrades, quote) {
+  return openTrades.filter(trade => quoteCurrency(trade.pair) === quote).reduce((sum, trade) => sum + Number(trade.entry_price || 0) * Number(trade.amount || 0), 0);
+}
+
+function capitalPlan(pair, balances, openTrades, maxQuote, minReserved) {
+  const quote = quoteCurrency(pair);
+  const balanceQuote = getBalanceAmount(balances, quote);
+  const exposure = quoteExposure(openTrades, quote);
+  const totalQuote = balanceQuote + exposure;
+  const budgetLeft = Math.max(0, totalQuote * 0.8 - exposure);
+  const spendable = Math.max(0, balanceQuote - minReserved);
+  return { quote, balanceQuote, exposure, orderQuote: Math.min(maxQuote, spendable, budgetLeft) };
+}
+
+function evaluateTechnical(bot, candles, ticker) {
   const closes = candles.map(c => c.close);
   const recent = candles.slice(-3);
   const strategy = bot.strategy || bot.type || 'ema_cross';
@@ -107,34 +108,62 @@ function evaluateBot(bot, candles, ticker) {
   const ema21 = ema(closes.slice(-60), 21);
   const ema9Prev = ema(closes.slice(-31, -1), 9);
   const currentRsi = rsi(closes);
-  const fallingFast = recent.length === 3 && ((recent[0].close - recent[2].close) / recent[0].close) * 100 > 0.3;
-  const volumeAvg = candles.slice(-12).reduce((s, c) => s + c.volume, 0) / Math.max(candles.slice(-12).length, 1);
-  const volumeGrowing = recent.length === 3 && recent[2].volume > recent[1].volume && recent[1].volume > recent[0].volume;
+  const fallingFast = recent.length === 3 && ((recent[0].close - recent[2].close) / recent[0].close) * 100 > 0.35;
   const recovering = recent.length === 3 && recent[2].close > recent[1].close && recent[1].close >= recent[0].close;
-  const high5 = Math.max(...candles.slice(-6, -1).map(c => c.high));
   const high12 = Math.max(...candles.slice(-13, -1).map(c => c.high));
-  const return5m = closes.length > 5 ? ((closes[closes.length - 1] - closes[closes.length - 6]) / closes[closes.length - 6]) * 100 : 0;
+  const return25m = closes.length > 5 ? ((closes[closes.length - 1] - closes[closes.length - 6]) / closes[closes.length - 6]) * 100 : 0;
 
-  if (bot.type === 'risk_guardian') return { side: 'hold', confidence: 0.7, score: 35, reason: 'risk_ok: scanner operativo, control de riesgo en execution engine' };
+  if (bot.type === 'risk_guardian') return { side: 'hold', confidence: 0.7, technicalScore: 20, reason: 'risk_guardian: control delegado al Execution Engine' };
+  if (strategy.includes('first_live_trade')) return { side: 'buy', confidence: 0.58, technicalScore: 28, reason: 'first_live_trade: señal manual de prueba conservadora' };
+  if (strategy.includes('micro')) {
+    if (!fallingFast && currentRsi < 68 && (recovering || return25m > 0.08)) return { side: 'buy', confidence: 0.61, technicalScore: 34, reason: `micro_scalp BUY: RSI ${currentRsi.toFixed(1)}, retorno 25m ${return25m.toFixed(3)}%` };
+  }
   if (strategy.includes('mean') || bot.type === 'mean_reversion') {
-    if (currentRsi < 42 && !fallingFast) return { side: 'buy', confidence: 0.58, score: 32, reason: `mean_reversion BUY: RSI ${currentRsi.toFixed(1)} sin caída rápida` };
-    if (currentRsi > 58) return { side: 'sell', confidence: 0.57, score: 28, reason: `mean_reversion SELL: RSI ${currentRsi.toFixed(1)}` };
+    if (currentRsi < 42 && !fallingFast) return { side: 'buy', confidence: 0.6, technicalScore: 32, reason: `mean_reversion BUY: RSI ${currentRsi.toFixed(1)} sin caída rápida` };
+    if (currentRsi > 62) return { side: 'sell', confidence: 0.57, technicalScore: 24, reason: `mean_reversion SELL: RSI ${currentRsi.toFixed(1)}` };
   }
-  if (strategy.includes('momentum')) {
-    if (ticker.price > high5 || return5m > 0.15) return { side: 'buy', confidence: 0.59, score: 34, reason: `momentum BUY: retorno 5m ${return5m.toFixed(3)}%` };
-    if (return5m < -0.10) return { side: 'sell', confidence: 0.56, score: 26, reason: 'momentum SELL: momentum debilitado' };
+  if (strategy.includes('momentum') || bot.type === 'ai_sentiment') {
+    if (return25m > 0.12 || ticker.price > high12) return { side: 'buy', confidence: 0.6, technicalScore: 33, reason: `momentum BUY: retorno 25m ${return25m.toFixed(3)}%` };
+    if (return25m < -0.15) return { side: 'sell', confidence: 0.56, technicalScore: 22, reason: 'momentum SELL: momentum debilitado' };
   }
-  if (strategy.includes('breakout')) {
-    if (ticker.price > high12 && recent[2]?.volume > volumeAvg) return { side: 'buy', confidence: 0.6, score: 36, reason: 'breakout BUY: rompe máximo 12 velas con volumen' };
-    if (ticker.price < high12) return { side: 'sell', confidence: 0.55, score: 24, reason: 'breakout SELL: vuelve al rango' };
-  }
-  if (bot.type === 'ai_sentiment') {
-    if (recovering || volumeGrowing) return { side: 'buy', confidence: 0.56, score: 30, reason: 'ai_sentiment momentum BUY: recuperación/volumen creciente' };
-    return { side: 'hold', confidence: 0.45, score: 12, reason: 'ai_sentiment HOLD: datos insuficientes' };
-  }
-  if (ema9 > ema21 && ema9 > ema9Prev) return { side: 'buy', confidence: 0.58, score: 33, reason: `trend_following BUY: EMA9 ${ema9.toFixed(4)} > EMA21 ${ema21.toFixed(4)} y pendiente positiva` };
-  if (ema9 < ema21) return { side: 'sell', confidence: 0.56, score: 26, reason: `trend_following SELL: EMA9 ${ema9.toFixed(4)} < EMA21 ${ema21.toFixed(4)}` };
-  return { side: 'hold', confidence: 0.4, score: 10, reason: 'Sin señal activa' };
+  if (ema9 > ema21 && ema9 > ema9Prev && currentRsi < 72) return { side: 'buy', confidence: 0.6, technicalScore: 35, reason: `ema_cross BUY: EMA9 ${ema9.toFixed(4)} > EMA21 ${ema21.toFixed(4)}` };
+  if (ema9 < ema21) return { side: 'sell', confidence: 0.56, technicalScore: 22, reason: `ema_cross SELL: EMA9 ${ema9.toFixed(4)} < EMA21 ${ema21.toFixed(4)}` };
+  return { side: 'hold', confidence: 0.4, technicalScore: 8, reason: 'Sin señal técnica suficiente' };
+}
+
+function liquidityScore(candles, ticker, minQuote) {
+  const recent = candles.slice(-12);
+  const avgQuoteVolume = recent.reduce((sum, candle) => sum + candle.volume * candle.close, 0) / Math.max(recent.length, 1);
+  if (!avgQuoteVolume || avgQuoteVolume < Math.max(minQuote * 2, 15)) return { ok: false, score: 0, avgQuoteVolume, reason: 'volumen insuficiente' };
+  if (ticker.volume24h * ticker.price < Math.max(minQuote * 30, 250)) return { ok: false, score: 4, avgQuoteVolume, reason: 'liquidez baja' };
+  return { ok: true, score: Math.min(15, Math.round(avgQuoteVolume / Math.max(minQuote, 1))), avgQuoteVolume, reason: 'volumen OK' };
+}
+
+async function evaluateCandidate({ bot, pair, balances, openTrades, maxQuote, minReserved }) {
+  const normalizedPair = normalizePair(pair);
+  const strategy = bot.strategy || bot.type || 'ema_cross';
+  const plan = capitalPlan(normalizedPair, balances, openTrades, maxQuote, minReserved);
+  if (openTrades.some(trade => normalizePair(trade.pair) === normalizedPair)) throw new Error('ya existe trade abierto del mismo par');
+  if (openTrades.some(trade => trade.bot_name === bot.name && normalizePair(trade.pair) === normalizedPair)) throw new Error('ya existe trade abierto del mismo bot/par');
+
+  const [ticker, rules, candles] = await Promise.all([getTicker(normalizedPair), getAssetPairRules(normalizedPair), getCandles(normalizedPair, 5)]);
+  const minQuote = minRequiredQuote(rules, ticker.price);
+  const volume = roundDown(plan.orderQuote / ticker.price, rules.lot_decimals);
+  if (ticker.spreadPct > 0.25) throw new Error('spread alto');
+  if (plan.orderQuote < minQuote || volume < rules.ordermin) throw new Error('capital insuficiente para mínimo Kraken');
+  const liquidity = liquidityScore(candles, ticker, minQuote);
+  if (!liquidity.ok) throw new Error(liquidity.reason);
+
+  const technical = evaluateTechnical(bot, candles, ticker);
+  const spreadScore = Math.max(0, Math.round(20 - ticker.spreadPct * 70));
+  const capitalScore = plan.orderQuote >= minQuote ? 20 : 0;
+  const positionScore = 10;
+  const recencyScore = 5;
+  const score = Math.min(100, technical.technicalScore + spreadScore + liquidity.score + capitalScore + positionScore + recencyScore);
+  const status = technical.side === 'hold' || score < 55 || technical.confidence < 0.55 ? 'rejected' : 'new';
+  const reason = status === 'new' ? technical.reason : `${technical.reason} · score ${score}/55`;
+
+  return { bot, pair: normalizedPair, strategy, ticker, rules, candles, plan, minQuote, volume, liquidity, technical, score, status, reason };
 }
 
 Deno.serve(async (req) => {
@@ -148,38 +177,73 @@ Deno.serve(async (req) => {
     const entities = base44.asServiceRole.entities;
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 3 * 60 * 1000).toISOString();
-    const maxQuote = Number(Deno.env.get('MAX_LIVE_ORDER_QUOTE') || '10');
+    const maxQuote = Math.min(Number(Deno.env.get('MAX_LIVE_ORDER_QUOTE') || '8'), 8);
+    const minReserved = Number(Deno.env.get('MIN_RESERVED_QUOTE') || '2');
     const liveAllowed = toBool(Deno.env.get('KRAKEN_LIVE_TRADING')) && toBool(Deno.env.get('BOTCO_LIVE_ENABLED'));
     const sessions = await entities.BotSession.filter({ active: true }, '-created_date', 5);
     const liveSession = sessions.find(session => session.mode === 'live');
-    const bots = (await entities.Bot.list()).filter(bot => bot.status === 'active' && bot.trading_mode === 'live' && bot.live_enabled === true && (bot.exchange || 'kraken') === 'kraken');
-    const balances = liveAllowed ? await krakenPrivate('Balance') : {};
+    const allBots = await entities.Bot.list();
+    const bots = allBots.filter(bot => bot.status === 'active' && bot.trading_mode === 'live' && bot.live_enabled === true && (bot.exchange || 'kraken') === 'kraken');
     const created = [];
     const rejected = [];
 
-    if (!liveAllowed) rejected.push({ reason: 'KRAKEN_LIVE_TRADING/BOTCO_LIVE_ENABLED false' });
-    if (!liveSession) rejected.push({ reason: 'No hay BotSession LIVE activa' });
+    if (!liveAllowed || !liveSession || !bots.length) {
+      const reason = !liveAllowed ? 'KRAKEN_LIVE_TRADING/BOTCO_LIVE_ENABLED false' : !liveSession ? 'No hay BotSession LIVE activa' : 'No hay bots LIVE activos';
+      return Response.json({ ok: true, scannerTick: now.toISOString(), skipped: true, reason, scannedPairs: PAIRS, scannedBots: bots.length, signalsCreated: 0, signalsRejected: 0 });
+    }
 
+    const openTrades = await entities.Trade.filter({ mode: 'live', status: 'open' }, '-created_date', 50);
+    const balances = await krakenPrivate('Balance');
+    const jobs = [];
     for (const bot of bots) {
-      const choice = liveAllowed ? await chooseTradablePair(balances, Math.min(Number(bot.max_order_quote || bot.max_order_usd || maxQuote), maxQuote)) : { rejected: [] };
-      if (!choice.pair) {
-        const reason = (choice.rejected || []).map(item => `${item.pair}: ${item.reason}`).join(' | ') || 'Sin par operable';
-        const signal = await entities.Signal.create({ bot_name: bot.name, bot_id: bot.id, strategy: bot.strategy || bot.type, exchange: 'kraken', pair: bot.pairs?.[0] || 'AUTO', side: 'hold', confidence: 0, score: 0, reason, price: 0, timeframe: '1m', status: 'rejected', expires_at: expiresAt, raw_data: JSON.stringify({ rejectedPairs: choice.rejected || [] }) });
-        rejected.push({ bot: bot.name, reason });
-        created.push(signal);
-        continue;
+      for (const pair of PAIRS) {
+        jobs.push(evaluateCandidate({ bot, pair, balances, openTrades, maxQuote: Math.min(Number(bot.max_order_quote || bot.max_order_usd || maxQuote), maxQuote), minReserved }));
       }
-      const candles = await getCandles(choice.pair, 1);
-      const decision = evaluateBot(bot, candles, choice.ticker);
-      const requiredScore = minScore(liveSession?.risk_profile);
-      const status = decision.side === 'hold' || decision.score < requiredScore ? 'rejected' : 'new';
-      const signal = await entities.Signal.create({ bot_name: bot.name, bot_id: bot.id, strategy: bot.strategy || bot.type, exchange: 'kraken', pair: choice.pair, side: decision.side, confidence: decision.confidence, score: decision.score, reason: status === 'new' ? decision.reason : `${decision.reason} · score ${decision.score}/${requiredScore}`, price: choice.ticker.price, timeframe: '1m', status, expires_at: expiresAt, raw_data: JSON.stringify({ spreadPct: choice.ticker.spreadPct, orderQuote: choice.orderQuote, balanceQuote: choice.balanceQuote, rejectedPairs: choice.rejected }) });
+    }
+
+    const settled = await Promise.allSettled(jobs);
+    const candidates = [];
+    for (const result of settled) {
+      if (result.status === 'fulfilled') candidates.push(result.value);
+      else rejected.push({ reason: result.reason?.message || 'error evaluando par' });
+    }
+
+    const sorted = candidates.sort((a, b) => b.score - a.score);
+    for (const item of sorted) {
+      const signal = await entities.Signal.create({
+        bot_name: item.bot.name,
+        bot_id: item.bot.id,
+        strategy: item.strategy,
+        exchange: 'kraken',
+        pair: item.pair,
+        side: item.technical.side,
+        confidence: item.technical.confidence,
+        score: item.score,
+        reason: item.reason,
+        price: item.ticker.price,
+        timeframe: '5m',
+        status: item.status,
+        expires_at: expiresAt,
+        min_required_quote: Number(item.minQuote.toFixed(8)),
+        available_quote: Number(item.plan.balanceQuote.toFixed(8)),
+        order_quote: Number(item.plan.orderQuote.toFixed(8)),
+        spread_pct: Number(item.ticker.spreadPct.toFixed(4)),
+        volume_score: item.liquidity.score,
+        raw_data: JSON.stringify({ scannedPairs: PAIRS, parallel: true, ordermin: item.rules.ordermin, costmin: item.rules.costmin, lotDecimals: item.rules.lot_decimals, pairDecimals: item.rules.pair_decimals, avgQuoteVolume5m: item.liquidity.avgQuoteVolume, balanceQuote: item.plan.balanceQuote, exposureQuote: item.plan.exposure, maxQuote, minReserved })
+      });
       created.push(signal);
-      if (status === 'rejected') rejected.push({ bot: bot.name, pair: choice.pair, reason: signal.reason });
+      if (item.status === 'rejected') rejected.push({ bot: item.bot.name, pair: item.pair, reason: signal.reason });
+    }
+
+    const missingExecutable = bots.filter(bot => !created.some(signal => signal.bot_id === bot.id && signal.status === 'new'));
+    for (const bot of missingExecutable) {
+      const botRejected = rejected.slice(0, 12);
+      const signal = await entities.Signal.create({ bot_name: bot.name, bot_id: bot.id, strategy: bot.strategy || bot.type, exchange: 'kraken', pair: 'AUTO', side: 'hold', confidence: 0, score: 0, reason: 'Sin señal ejecutable: revisar motivos por par en raw_data', price: 0, timeframe: '5m', status: 'rejected', expires_at: expiresAt, raw_data: JSON.stringify({ scannedPairs: PAIRS, parallel: true, rejected: botRejected }) });
+      created.push(signal);
     }
 
     if (liveSession?.id) await entities.BotSession.update(liveSession.id, { last_tick_at: now.toISOString(), last_error: '' });
-    return Response.json({ ok: true, scannerTick: now.toISOString(), scannedBots: bots.length, signalsCreated: created.length, signalsRejected: rejected.length, reasons: rejected });
+    return Response.json({ ok: true, scannerTick: now.toISOString(), parallel: true, scannedPairs: PAIRS, scannedBots: bots.length, evaluations: settled.length, signalsCreated: created.length, signalsRejected: rejected.length, bestSignals: created.filter(signal => signal.status === 'new').slice(0, 5), reasons: rejected.slice(0, 20) });
   } catch (error) {
     return Response.json({ ok: false, error: error.message }, { status: 500 });
   }

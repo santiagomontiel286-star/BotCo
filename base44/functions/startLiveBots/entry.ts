@@ -7,13 +7,13 @@ function toBool(value) {
 function validateEnv() {
   const required = ['KRAKEN_API_KEY', 'KRAKEN_API_SECRET', 'KRAKEN_LIVE_TRADING', 'BOTCO_LIVE_ENABLED', 'MAX_LIVE_ORDER_QUOTE', 'BOTCO_AUTOTRADE_INTERVAL_MINUTES'];
   const missing = required.filter(name => !Deno.env.get(name));
-  const maxQuote = Number(Deno.env.get('MAX_LIVE_ORDER_QUOTE') || '0');
+  const configuredMax = Number(Deno.env.get('MAX_LIVE_ORDER_QUOTE') || '8');
+  const maxQuote = Math.min(configuredMax || 8, 8);
   if (missing.length) throw new Error(`Faltan variables LIVE: ${missing.join(', ')}`);
   if (!toBool(Deno.env.get('KRAKEN_LIVE_TRADING'))) throw new Error('KRAKEN_LIVE_TRADING debe ser true');
   if (!toBool(Deno.env.get('BOTCO_LIVE_ENABLED'))) throw new Error('BOTCO_LIVE_ENABLED debe ser true');
   if (!maxQuote || maxQuote <= 0) throw new Error('MAX_LIVE_ORDER_QUOTE debe ser mayor que 0');
-  if (maxQuote > 25) throw new Error('MAX_LIVE_ORDER_QUOTE supera 25; LIVE bloqueado');
-  return { maxQuote, intervalMinutes: Number(Deno.env.get('BOTCO_AUTOTRADE_INTERVAL_MINUTES') || '5') };
+  return { maxQuote, maxOpenTrades: Number(Deno.env.get('MAX_OPEN_LIVE_TRADES') || '3'), minReservedQuote: Number(Deno.env.get('MIN_RESERVED_QUOTE') || '2'), intervalMinutes: Number(Deno.env.get('BOTCO_AUTOTRADE_INTERVAL_MINUTES') || '5') };
 }
 
 Deno.serve(async (req) => {
@@ -38,7 +38,7 @@ Deno.serve(async (req) => {
         trading_mode: 'live',
         live_enabled: true,
         max_order_quote: Math.min(Number(bot.max_order_quote || bot.max_order_usd || env.maxQuote), env.maxQuote),
-        quote_currency: bot.quote_currency || 'USD',
+        quote_currency: bot.quote_currency || 'EUR',
         strategy: bot.strategy || 'micro_scalp',
         last_run_at: now,
         last_signal: 'LIVE activado, esperando señal',
@@ -57,7 +57,7 @@ Deno.serve(async (req) => {
       started_at: now,
       last_tick_at: now,
       risk_profile: payload.riskProfile || 'conservador',
-      pairs: ['XBTUSD', 'XBTEUR', 'ETHUSD', 'ETHEUR'],
+      pairs: ['ADAEUR', 'XRPEUR', 'DOTEUR', 'LINKEUR', 'ATOMEUR', 'SOLEUR', 'ETHEUR', 'ADAUSD', 'XRPUSD', 'DOTUSD', 'LINKUSD', 'ATOMUSD', 'SOLUSD', 'ETHUSD'],
       total_trades: 0,
       total_pnl: 0,
       last_error: '',

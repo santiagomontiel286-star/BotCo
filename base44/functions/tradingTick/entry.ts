@@ -1,58 +1,44 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.25';
 
 const KRAKEN_API = 'https://api.kraken.com';
-const SUPPORTED_PAIRS = ['ETHEUR', 'ETHUSD', 'SOLEUR', 'SOLUSD', 'XRPEUR', 'XRPUSD', 'ADAEUR', 'ADAUSD', 'XBTEUR', 'XBTUSD'];
-const LOW_CAPITAL_ASSETS = ['ETH', 'SOL', 'XRP', 'ADA', 'BTC'];
+const SUPPORTED_PAIRS = ['ADAEUR', 'XRPEUR', 'DOTEUR', 'LINKEUR', 'ATOMEUR', 'SOLEUR', 'ETHEUR', 'XBTEUR', 'ADAUSD', 'XRPUSD', 'DOTUSD', 'LINKUSD', 'ATOMUSD', 'SOLUSD', 'ETHUSD', 'XBTUSD'];
+const LOW_CAPITAL_ASSETS = ['ADA', 'XRP', 'DOT', 'LINK', 'ATOM', 'SOL', 'ETH', 'BTC'];
 const QUOTE_KEYS = { USD: ['ZUSD', 'USD'], EUR: ['ZEUR', 'EUR'] };
-const ASSET_KEYS = {
-  XBT: ['XXBT', 'XBT', 'BTC'],
-  ETH: ['XETH', 'ETH'],
-  SOL: ['SOL'],
-  XRP: ['XXRP', 'XRP'],
-  ADA: ['ADA'],
-};
-const DISPLAY_PAIRS = {
-  XBTUSD: 'BTC/USD',
-  XBTEUR: 'BTC/EUR',
-  ETHUSD: 'ETH/USD',
-  ETHEUR: 'ETH/EUR',
-  SOLUSD: 'SOL/USD',
-  SOLEUR: 'SOL/EUR',
-  XRPUSD: 'XRP/USD',
-  XRPEUR: 'XRP/EUR',
-  ADAUSD: 'ADA/USD',
-  ADAEUR: 'ADA/EUR',
+const ASSET_KEYS = { XBT: ['XXBT', 'XBT', 'BTC'], ETH: ['XETH', 'ETH'], SOL: ['SOL'], XRP: ['XXRP', 'XRP'], ADA: ['ADA'], DOT: ['DOT'], LINK: ['LINK'], ATOM: ['ATOM'] };
+const DISPLAY_PAIRS = { XBTUSD: 'BTC/USD', XBTEUR: 'BTC/EUR', ETHUSD: 'ETH/USD', ETHEUR: 'ETH/EUR', SOLUSD: 'SOL/USD', SOLEUR: 'SOL/EUR', XRPUSD: 'XRP/USD', XRPEUR: 'XRP/EUR', ADAUSD: 'ADA/USD', ADAEUR: 'ADA/EUR', DOTUSD: 'DOT/USD', DOTEUR: 'DOT/EUR', LINKUSD: 'LINK/USD', LINKEUR: 'LINK/EUR', ATOMUSD: 'ATOM/USD', ATOMEUR: 'ATOM/EUR' };
+const STRATEGY_RISK = {
+  micro_scalp: { timeoutMinutes: 30, takeProfitPct: 0.60, stopLossPct: 0.80 },
+  micro_scalp_test: { timeoutMinutes: 30, takeProfitPct: 0.60, stopLossPct: 0.80 },
+  ema_cross: { timeoutMinutes: 60, takeProfitPct: 0.45, stopLossPct: 0.65 },
+  mean_reversion: { timeoutMinutes: 45, takeProfitPct: 0.35, stopLossPct: 0.55 },
+  first_live_trade: { timeoutMinutes: 10, takeProfitPct: 0.25, stopLossPct: 0.35 },
+  default: { timeoutMinutes: 45, takeProfitPct: 0.45, stopLossPct: 0.65 }
 };
 let lastNonce = 0;
 const publicCache = new Map();
 
-function nextNonce() {
-  const now = Date.now() * 1000;
-  lastNonce = Math.max(now, lastNonce + 1);
-  return String(lastNonce);
-}
-
-function tickId() {
-  return `tick_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function toBool(value) {
-  return String(value || '').toLowerCase() === 'true';
-}
+function nextNonce() { const now = Date.now() * 1000; lastNonce = Math.max(now, lastNonce + 1); return String(lastNonce); }
+function tickId() { return `tick_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`; }
+function toBool(value) { return String(value || '').toLowerCase() === 'true'; }
+function normalizePair(pair) { const value = String(pair || '').replace('/', '').toUpperCase(); if (value === 'BTCUSD') return 'XBTUSD'; if (value === 'BTCEUR') return 'XBTEUR'; if (value === 'XBT/EUR') return 'XBTEUR'; if (value === 'XBT/USD') return 'XBTUSD'; return value || 'XBTUSD'; }
+function displayPair(pair) { const value = normalizePair(pair); return DISPLAY_PAIRS[value] || value; }
+function baseAsset(pair) { const value = normalizePair(pair); if (value.startsWith('XBT')) return 'XBT'; if (value.startsWith('ETH')) return 'ETH'; if (value.startsWith('SOL')) return 'SOL'; if (value.startsWith('XRP')) return 'XRP'; if (value.startsWith('ADA')) return 'ADA'; if (value.startsWith('DOT')) return 'DOT'; if (value.startsWith('LINK')) return 'LINK'; if (value.startsWith('ATOM')) return 'ATOM'; return 'ETH'; }
+function quoteCurrency(pair) { return normalizePair(pair).endsWith('EUR') ? 'EUR' : 'USD'; }
+function getBalanceAmount(balances, currency) { return (QUOTE_KEYS[currency] || [currency]).reduce((sum, key) => sum + Number(balances[key] || 0), 0); }
+function getAssetBalance(balances, asset) { return (ASSET_KEYS[asset] || [asset]).reduce((sum, key) => sum + Number(balances[key] || 0), 0); }
+function roundDown(value, decimals) { const factor = 10 ** decimals; return Math.floor(value * factor) / factor; }
+function pairForAsset(asset, quote) { return asset === 'BTC' ? `XBT${quote}` : `${asset}${quote}`; }
+function strategyRisk(strategy) { return STRATEGY_RISK[strategy] || STRATEGY_RISK.default; }
 
 function envConfig() {
-  const required = ['KRAKEN_API_KEY', 'KRAKEN_API_SECRET', 'KRAKEN_LIVE_TRADING', 'BOTCO_LIVE_ENABLED', 'MAX_LIVE_ORDER_QUOTE', 'BOTCO_AUTOTRADE_INTERVAL_MINUTES'];
+  const required = ['KRAKEN_API_KEY', 'KRAKEN_API_SECRET', 'KRAKEN_LIVE_TRADING', 'BOTCO_LIVE_ENABLED'];
   const missing = required.filter(name => !Deno.env.get(name));
-  const maxQuote = Number(Deno.env.get('MAX_LIVE_ORDER_QUOTE') || '0');
+  const configuredMax = Number(Deno.env.get('MAX_LIVE_ORDER_QUOTE') || '8');
+  const maxQuote = Math.min(configuredMax || 8, 8);
+  const maxOpenTrades = Number(Deno.env.get('MAX_OPEN_LIVE_TRADES') || '3');
+  const minReservedQuote = Number(Deno.env.get('MIN_RESERVED_QUOTE') || '2');
   const intervalMinutes = Number(Deno.env.get('BOTCO_AUTOTRADE_INTERVAL_MINUTES') || '5');
-  return {
-    missing,
-    krakenLiveTrading: toBool(Deno.env.get('KRAKEN_LIVE_TRADING')),
-    botcoLiveEnabled: toBool(Deno.env.get('BOTCO_LIVE_ENABLED')),
-    maxQuote,
-    intervalMinutes,
-    ok: missing.length === 0 && toBool(Deno.env.get('KRAKEN_LIVE_TRADING')) && toBool(Deno.env.get('BOTCO_LIVE_ENABLED')) && maxQuote > 0 && maxQuote <= 25,
-  };
+  return { missing, configuredMax, maxQuote, maxOpenTrades, minReservedQuote, intervalMinutes, krakenLiveTrading: toBool(Deno.env.get('KRAKEN_LIVE_TRADING')), botcoLiveEnabled: toBool(Deno.env.get('BOTCO_LIVE_ENABLED')), ok: missing.length === 0 && toBool(Deno.env.get('KRAKEN_LIVE_TRADING')) && toBool(Deno.env.get('BOTCO_LIVE_ENABLED')) && maxQuote > 0 && maxQuote <= 8 };
 }
 
 function assertLiveEnv() {
@@ -61,7 +47,6 @@ function assertLiveEnv() {
   if (!env.krakenLiveTrading) throw new Error('KRAKEN_LIVE_TRADING debe ser true');
   if (!env.botcoLiveEnabled) throw new Error('BOTCO_LIVE_ENABLED debe ser true');
   if (!env.maxQuote || env.maxQuote <= 0) throw new Error('MAX_LIVE_ORDER_QUOTE debe ser mayor que 0');
-  if (env.maxQuote > 25) throw new Error('MAX_LIVE_ORDER_QUOTE supera 25; LIVE bloqueado por seguridad');
   return env;
 }
 
@@ -85,11 +70,7 @@ async function krakenPrivate(endpoint, params = {}) {
   const path = `/0/private/${endpoint}`;
   const body = new URLSearchParams({ nonce: nextNonce(), ...params });
   const postData = body.toString();
-  const response = await fetch(`${KRAKEN_API}${path}`, {
-    method: 'POST',
-    headers: { 'API-Key': apiKey, 'API-Sign': await signKraken(path, postData, apiSecret), 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: postData,
-  });
+  const response = await fetch(`${KRAKEN_API}${path}`, { method: 'POST', headers: { 'API-Key': apiKey, 'API-Sign': await signKraken(path, postData, apiSecret), 'Content-Type': 'application/x-www-form-urlencoded' }, body: postData });
   const json = await response.json();
   if (json.error?.length) throw new Error(json.error.join(', '));
   return json.result;
@@ -100,7 +81,6 @@ async function krakenPublic(endpoint, params = {}) {
   const ttlMs = endpoint === 'AssetPairs' ? 30 * 60 * 1000 : 5000;
   const cached = publicCache.get(cacheKey);
   if (cached && Date.now() - cached.at < ttlMs) return cached.result;
-
   const url = new URL(`${KRAKEN_API}/0/public/${endpoint}`);
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
   const response = await fetch(url);
@@ -110,46 +90,6 @@ async function krakenPublic(endpoint, params = {}) {
   return json.result;
 }
 
-function normalizePair(pair) {
-  const value = String(pair || '').replace('/', '').toUpperCase();
-  if (value === 'BTCUSD') return 'XBTUSD';
-  if (value === 'BTCEUR') return 'XBTEUR';
-  if (value === 'XBT/EUR') return 'XBTEUR';
-  if (value === 'XBT/USD') return 'XBTUSD';
-  return value || 'XBTUSD';
-}
-
-function displayPair(pair) {
-  const value = normalizePair(pair);
-  return DISPLAY_PAIRS[value] || value;
-}
-
-function baseAsset(pair) {
-  const value = normalizePair(pair);
-  if (value.startsWith('XBT')) return 'XBT';
-  if (value.startsWith('ETH')) return 'ETH';
-  if (value.startsWith('SOL')) return 'SOL';
-  if (value.startsWith('XRP')) return 'XRP';
-  if (value.startsWith('ADA')) return 'ADA';
-  return 'ETH';
-}
-
-function quoteCurrency(pair) {
-  return normalizePair(pair).endsWith('EUR') ? 'EUR' : 'USD';
-}
-
-function getBalanceAmount(balances, currency) {
-  return (QUOTE_KEYS[currency] || [currency]).reduce((sum, key) => sum + Number(balances[key] || 0), 0);
-}
-
-function getAssetBalance(balances, asset) {
-  return (ASSET_KEYS[asset] || [asset]).reduce((sum, key) => sum + Number(balances[key] || 0), 0);
-}
-
-async function getBalances() {
-  return krakenPrivate('Balance');
-}
-
 async function getCurrentPrice(pair) {
   const result = await krakenPublic('Ticker', { pair: normalizePair(pair) });
   const key = Object.keys(result)[0];
@@ -157,116 +97,36 @@ async function getCurrentPrice(pair) {
   const ask = Number(ticker.a?.[0] || 0);
   const bid = Number(ticker.b?.[0] || 0);
   const last = Number(ticker.c?.[0] || 0);
+  const volume24h = Number(ticker.v?.[1] || 0);
   if (!last || !ask || !bid || ask <= bid) throw new Error(`Precio/spread inválido para ${displayPair(pair)}`);
-  return { price: last, bid, ask, spreadPct: ((ask - bid) / last) * 100 };
+  return { price: last, bid, ask, volume24h, spreadPct: ((ask - bid) / last) * 100 };
 }
 
 async function getAssetPairRules(pair) {
   const result = await krakenPublic('AssetPairs', { pair: normalizePair(pair) });
   const key = Object.keys(result)[0];
   const raw = result[key] || {};
-  return {
-    pair: normalizePair(pair),
-    ordermin: Number(raw.ordermin || 0),
-    costmin: Number(raw.costmin || 0),
-    lot_decimals: Number(raw.lot_decimals ?? 8),
-    pair_decimals: Number(raw.pair_decimals ?? 2),
-  };
+  return { pair: normalizePair(pair), ordermin: Number(raw.ordermin || 0), costmin: Number(raw.costmin || 0), lot_decimals: Number(raw.lot_decimals ?? 8), pair_decimals: Number(raw.pair_decimals ?? 2) };
 }
 
-async function getCandles(pair, interval = 1) {
+async function getCandles(pair, interval = 5) {
   const result = await krakenPublic('OHLC', { pair: normalizePair(pair), interval });
   const key = Object.keys(result).find(item => item !== 'last');
-  return (result[key] || []).slice(-60).map(row => ({ time: Number(row[0]), open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]) }));
+  return (result[key] || []).slice(-24).map(row => ({ time: Number(row[0]), close: Number(row[4]), volume: Number(row[6]) }));
 }
 
-function roundDown(value, decimals) {
-  const factor = 10 ** decimals;
-  return Math.floor(value * factor) / factor;
+function minRequiredQuote(rules, price) { return Math.max(Number(rules.costmin || 0), Number(rules.ordermin || 0) * price); }
+function quoteExposure(openTrades, quote) { return openTrades.filter(trade => quoteCurrency(trade.pair) === quote).reduce((sum, trade) => sum + Number(trade.entry_price || 0) * Number(trade.amount || 0), 0); }
+
+function liquidityCheck(candles, ticker, minQuote) {
+  const avgQuoteVolume = candles.slice(-12).reduce((sum, candle) => sum + candle.volume * candle.close, 0) / Math.max(candles.slice(-12).length, 1);
+  if (!avgQuoteVolume || avgQuoteVolume < Math.max(minQuote * 2, 15)) return { ok: false, reason: 'volumen insuficiente', avgQuoteVolume };
+  if (ticker.volume24h * ticker.price < Math.max(minQuote * 30, 250)) return { ok: false, reason: 'liquidez baja', avgQuoteVolume };
+  return { ok: true, reason: 'volumen OK', avgQuoteVolume };
 }
 
-function calculateValidVolume(maxQuote, price, rules) {
-  const volume = roundDown(maxQuote / price, rules.lot_decimals);
-  const cost = volume * price;
-  if (!volume || volume <= 0) return { ok: false, reason: 'Volumen calculado inválido', volume, cost };
-  if (rules.ordermin && volume < rules.ordermin) return { ok: false, reason: `Volumen ${volume} menor al mínimo Kraken ${rules.ordermin}`, volume, cost };
-  if (rules.costmin && cost < rules.costmin) return { ok: false, reason: `Coste ${cost.toFixed(2)} menor al mínimo Kraken ${rules.costmin}`, volume, cost };
-  return { ok: true, volume, cost };
-}
-
-function pairForAsset(asset, quote) {
-  return asset === 'BTC' ? `XBT${quote}` : `${asset}${quote}`;
-}
-
-async function inspectTradablePair(pair, balanceQuote, maxQuote) {
-  const rules = await getAssetPairRules(pair);
-  const ticker = await getCurrentPrice(pair);
-  const orderQuote = Math.min(maxQuote, balanceQuote);
-  const calculated = calculateValidVolume(orderQuote, ticker.price, rules);
-  const minVolume = Number(rules.ordermin || 0);
-  const minCost = Math.max(Number(rules.costmin || 0), minVolume * ticker.price);
-  const missingCapital = Math.max(0, minCost - orderQuote);
-  return {
-    pair: normalizePair(pair),
-    selectedPair: displayPair(pair),
-    quote: quoteCurrency(pair),
-    balanceQuote,
-    orderQuote,
-    minVolume,
-    minCost: Number(minCost.toFixed(8)),
-    calculatedVolume: calculated.volume,
-    calculatedCost: Number((calculated.cost || 0).toFixed(8)),
-    missingCapital: Number(missingCapital.toFixed(8)),
-    operable: calculated.ok && missingCapital <= 0,
-    reason: calculated.ok ? 'Par operable con el saldo disponible' : calculated.reason,
-  };
-}
-
-async function chooseBestQuoteCurrency(bot, balances, maxQuote) {
-  const eurBalance = getBalanceAmount(balances, 'EUR');
-  const usdBalance = getBalanceAmount(balances, 'USD');
-  const quote = eurBalance > 0 ? 'EUR' : usdBalance > 0 ? 'USD' : null;
-  if (!quote) {
-    return { error: 'LIVE bloqueado: no hay saldo EUR/USD disponible', reason: 'No hay saldo EUR/USD disponible', balanceQuote: 0 };
-  }
-
-  const balanceQuote = quote === 'EUR' ? eurBalance : usdBalance;
-  const inspected = [];
-  for (const asset of LOW_CAPITAL_ASSETS) {
-    const pair = pairForAsset(asset, quote);
-    if (!SUPPORTED_PAIRS.includes(pair)) continue;
-    try {
-      inspected.push(await inspectTradablePair(pair, balanceQuote, maxQuote));
-    } catch (error) {
-      inspected.push({ pair, selectedPair: displayPair(pair), quote, balanceQuote, operable: false, reason: `Par no disponible en Kraken: ${error.message}` });
-    }
-  }
-
-  const operable = inspected.filter(item => item.operable).sort((a, b) => a.minCost - b.minCost);
-  if (operable.length) {
-    return { ...operable[0], reason: `Seleccionado automáticamente por menor coste mínimo compatible: ${operable[0].selectedPair}` };
-  }
-
-  const validMinimums = inspected.filter(item => Number(item.minCost || 0) > 0).sort((a, b) => a.missingCapital - b.missingCapital);
-  const closest = validMinimums[0];
-  if (!closest) return { error: 'LIVE bloqueado: no hay pares compatibles disponibles en Kraken', reason: 'No hay pares compatibles disponibles en Kraken', quote, balanceQuote, attemptedPairs: inspected };
-  return {
-    error: `LIVE bloqueado: capital inferior al mínimo del par. Faltan ${closest.missingCapital.toFixed(2)} ${quote}`,
-    reason: `Capital inferior al mínimo del par más accesible (${closest.selectedPair}). Faltan ${closest.missingCapital.toFixed(2)} ${quote}`,
-    selectedPair: closest.selectedPair,
-    quote,
-    balanceQuote,
-    minVolume: closest.minVolume,
-    minCost: closest.minCost,
-    calculatedVolume: closest.calculatedVolume,
-    missingCapital: closest.missingCapital,
-    attemptedPairs: inspected,
-  };
-}
-
-async function placeMarketOrder(pair, side, volume) {
-  return krakenPrivate('AddOrder', { pair: normalizePair(pair), type: side, ordertype: 'market', volume: String(volume), validate: 'false' });
-}
+async function getBalances() { return krakenPrivate('Balance'); }
+async function placeMarketOrder(pair, side, volume) { return krakenPrivate('AddOrder', { pair: normalizePair(pair), type: side, ordertype: 'market', volume: String(volume), validate: 'false' }); }
 
 async function closeTradeMarket(trade, currentPrice) {
   const pair = normalizePair(trade.pair);
@@ -282,56 +142,36 @@ async function closeTradeMarket(trade, currentPrice) {
   return { response: await placeMarketOrder(pair, trade.side === 'buy' ? 'sell' : 'buy', volume), volume };
 }
 
-async function queryOrderIfPossible(txid) {
-  if (!txid) return null;
-  try {
-    return await krakenPrivate('QueryOrders', { txid });
-  } catch {
-    return null;
-  }
+async function inspectTradablePair(pair, balanceQuote, maxQuote) {
+  const rules = await getAssetPairRules(pair);
+  const ticker = await getCurrentPrice(pair);
+  const orderQuote = Math.min(maxQuote, balanceQuote);
+  const volume = roundDown(orderQuote / ticker.price, rules.lot_decimals);
+  const minCost = minRequiredQuote(rules, ticker.price);
+  const missingCapital = Math.max(0, minCost - orderQuote);
+  return { pair: normalizePair(pair), selectedPair: displayPair(pair), quote: quoteCurrency(pair), balanceQuote, orderQuote, minVolume: rules.ordermin, minCost: Number(minCost.toFixed(8)), calculatedVolume: volume, calculatedCost: Number((volume * ticker.price).toFixed(8)), missingCapital: Number(missingCapital.toFixed(8)), operable: volume >= rules.ordermin && orderQuote >= minCost && ticker.spreadPct <= 0.25, reason: volume >= rules.ordermin && orderQuote >= minCost ? 'Par operable con capital bajo' : 'capital insuficiente para mínimo Kraken' };
 }
 
-function ema(values, period) {
-  if (values.length < period) return values[values.length - 1] || 0;
-  const k = 2 / (period + 1);
-  return values.slice(1).reduce((prev, value) => value * k + prev * (1 - k), values[0]);
-}
-
-function rsi(values, period = 14) {
-  if (values.length <= period) return 50;
-  const slice = values.slice(-period - 1);
-  let gains = 0;
-  let losses = 0;
-  for (let i = 1; i < slice.length; i++) {
-    const diff = slice[i] - slice[i - 1];
-    if (diff >= 0) gains += diff;
-    else losses += Math.abs(diff);
+async function chooseBestQuoteCurrency(bot, balances, maxQuote) {
+  const eurBalance = getBalanceAmount(balances, 'EUR');
+  const usdBalance = getBalanceAmount(balances, 'USD');
+  const quotes = eurBalance >= usdBalance ? ['EUR', 'USD'] : ['USD', 'EUR'];
+  const inspected = [];
+  for (const quote of quotes) {
+    const balanceQuote = quote === 'EUR' ? eurBalance : usdBalance;
+    if (balanceQuote <= 0) continue;
+    for (const asset of LOW_CAPITAL_ASSETS) {
+      const pair = pairForAsset(asset, quote);
+      if (!SUPPORTED_PAIRS.includes(pair)) continue;
+      try { inspected.push(await inspectTradablePair(pair, balanceQuote, maxQuote)); }
+      catch (error) { inspected.push({ pair, selectedPair: displayPair(pair), quote, balanceQuote, operable: false, reason: `Par no disponible en Kraken: ${error.message}` }); }
+    }
   }
-  if (losses === 0) return 100;
-  const rs = gains / losses;
-  return 100 - (100 / (1 + rs));
-}
-
-async function evaluateStrategy(bot, pair, ticker) {
-  const strategy = bot.strategy || 'ema_cross';
-  const interval = strategy === 'micro_scalp' || strategy === 'first_live_trade' ? 1 : 5;
-  const candles = await getCandles(pair, interval);
-  const closes = candles.map(candle => candle.close);
-  const recent = candles.slice(-3);
-  const currentRsi = rsi(closes);
-  const fallingHard = recent.length === 3 && recent.every(candle => candle.close < candle.open) && ((recent[0].open - recent[2].close) / recent[0].open) * 100 > 0.25;
-
-  if (ticker.spreadPct > 0.20) return { action: 'skip', reason: `Spread alto ${ticker.spreadPct.toFixed(3)}%`, confidence: 0 };
-  if (strategy === 'first_live_trade') return { action: 'buy', reason: `first_live_trade: spread ${ticker.spreadPct.toFixed(3)}%, mercado líquido`, confidence: 0.65 };
-  if (strategy === 'micro_scalp' || strategy === 'micro_scalp_test') {
-    if (fallingHard) return { action: 'skip', reason: 'Últimas velas fuertemente bajistas', confidence: 0.2 };
-    if (currentRsi >= 78) return { action: 'skip', reason: `RSI extremo ${currentRsi.toFixed(1)}`, confidence: 0.2 };
-    return { action: 'buy', reason: `micro_scalp: spread ${ticker.spreadPct.toFixed(3)}%, RSI ${currentRsi.toFixed(1)}`, confidence: 0.7 };
-  }
-  const emaFast = ema(closes.slice(-30), 9);
-  const emaSlow = ema(closes.slice(-60), 21);
-  if (emaFast > emaSlow && currentRsi < 75) return { action: 'buy', reason: `ema_cross: EMA9 ${emaFast.toFixed(2)} > EMA21 ${emaSlow.toFixed(2)}`, confidence: 0.72 };
-  return { action: 'skip', reason: `Sin señal alcista: EMA9 ${emaFast.toFixed(2)} / EMA21 ${emaSlow.toFixed(2)}`, confidence: 0.35 };
+  const operable = inspected.filter(item => item.operable).sort((a, b) => a.minCost - b.minCost);
+  if (operable.length) return { ...operable[0], reason: `Seleccionado por menor mínimo Kraken ejecutable: ${operable[0].selectedPair}` };
+  const closest = inspected.filter(item => Number(item.minCost || 0) > 0).sort((a, b) => a.missingCapital - b.missingCapital)[0];
+  if (!closest) return { error: 'LIVE bloqueado: no hay saldo EUR/USD disponible', reason: 'No hay saldo EUR/USD disponible', attemptedPairs: inspected };
+  return { error: `LIVE bloqueado: capital insuficiente para mínimo Kraken. Faltan ${closest.missingCapital.toFixed(2)} ${closest.quote}`, reason: `Capital insuficiente para mínimo Kraken en ${closest.selectedPair}`, attemptedPairs: inspected, ...closest };
 }
 
 function shouldCloseTrade(trade, ticker, forceClose, bot) {
@@ -339,89 +179,79 @@ function shouldCloseTrade(trade, ticker, forceClose, bot) {
   const entry = Number(trade.entry_price || 0);
   const amount = Number(trade.amount || 0);
   if (!entry || !amount) return { close: false, reason: 'Trade sin entrada o volumen válido' };
+  const strategy = bot?.strategy || trade.strategy || 'default';
+  const risk = strategyRisk(strategy);
   const pnlPct = ((ticker.price - entry) / entry) * (trade.side === 'buy' ? 1 : -1) * 100;
   const ageMs = Date.now() - new Date(trade.entry_date || trade.created_date).getTime();
-  const tp = Number(bot?.take_profit ?? 0.05);
-  const sl = Number(bot?.stop_loss ?? 0.20);
-  if (pnlPct >= tp) return { close: true, reason: `TP ${tp}% alcanzado`, pnlPct };
-  if (pnlPct <= -sl) return { close: true, reason: `SL -${sl}% alcanzado`, pnlPct };
-  if (ageMs >= 10 * 60 * 1000) return { close: true, reason: 'Timeout 10 minutos', pnlPct };
-  return { close: false, reason: 'Monitoreando operación abierta', pnlPct };
+  if (pnlPct >= risk.takeProfitPct) return { close: true, reason: `TP ${risk.takeProfitPct}% alcanzado`, pnlPct };
+  if (pnlPct <= -risk.stopLossPct) return { close: true, reason: `SL -${risk.stopLossPct}% alcanzado`, pnlPct };
+  if (ageMs >= risk.timeoutMinutes * 60 * 1000) return { close: true, reason: `Timeout ${risk.timeoutMinutes} minutos`, pnlPct };
+  return { close: false, reason: `Monitoreando hasta ${risk.timeoutMinutes}m`, pnlPct };
 }
 
-async function createAlert(entities, title, message, severity = 'info') {
-  try {
-    await entities.Alert.create({ title, message, severity, source: 'tradingTick LIVE', is_read: false });
-  } catch (error) {
-    console.log(`Alert skipped: ${error.message}`);
+async function createAlert(entities, title, message, severity = 'info') { try { await entities.Alert.create({ title, message, severity, source: 'tradingTick LIVE', is_read: false }); } catch (error) { console.log(`Alert skipped: ${error.message}`); } }
+async function safeBotUpdate(entities, botId, data) { if (!botId) return; try { await entities.Bot.update(botId, data); } catch (error) { console.log(`Bot update skipped: ${error.message}`); } }
+async function updateSession(entities, session, data) { if (!session?.id) return; try { await entities.BotSession.update(session.id, data); } catch (error) { console.log(`Session update skipped: ${error.message}`); } }
+async function rejectSignal(entities, signal, reason) { if (!signal?.id) return; await entities.Signal.update(signal.id, { status: 'rejected', reason: `${signal.reason || ''} · rejected: ${reason}` }); }
+async function markSignal(entities, signal, status, reason) { if (!signal?.id) return; await entities.Signal.update(signal.id, { status, reason: reason ? `${signal.reason || ''} · ${reason}` : signal.reason }); }
+
+async function getFreshSignals(entities) {
+  const now = Date.now();
+  const signals = await entities.Signal.filter({ status: 'new' }, '-created_date', 120);
+  const fresh = [];
+  for (const signal of signals) {
+    if (signal.expires_at && new Date(signal.expires_at).getTime() <= now) await entities.Signal.update(signal.id, { status: 'expired', reason: `${signal.reason || ''} · expired: superó 3 minutos` });
+    else fresh.push(signal);
   }
+  return fresh;
 }
 
-async function safeBotUpdate(entities, botId, data) {
-  if (!botId) return;
-  try {
-    await entities.Bot.update(botId, data);
-  } catch (error) {
-    console.log(`Bot update skipped: ${error.message}`);
-  }
+function rankSignals(signals) {
+  return signals.filter(signal => signal.side === 'buy' && Number(signal.score || 0) >= 55 && Number(signal.confidence || 0) >= 0.55).sort((a, b) => (Number(b.score || 0) - Number(a.score || 0)) || (Number(b.confidence || 0) - Number(a.confidence || 0)) || (new Date(b.created_date) - new Date(a.created_date)));
 }
 
-async function riskCheck(entities, bot, session, pair, balances, maxQuote, openTrades) {
+async function riskCheck({ entities, bot, session, pair, balances, env, openTrades, ticker, rules }) {
+  if (!env.krakenLiveTrading) return { ok: false, reason: 'KRAKEN_LIVE_TRADING debe ser true' };
+  if (!env.botcoLiveEnabled) return { ok: false, reason: 'BOTCO_LIVE_ENABLED debe ser true' };
   if (bot.status !== 'active' || bot.trading_mode !== 'live' || bot.live_enabled !== true) return { ok: false, reason: 'Bot no está LIVE activo' };
   if (!session || session.active !== true || session.mode !== 'live') return { ok: false, reason: 'No hay BotSession LIVE activa' };
+  if (openTrades.length >= env.maxOpenTrades) return { ok: false, reason: 'max open trades alcanzado' };
   if (bot.cooldown_until && new Date(bot.cooldown_until).getTime() > Date.now()) return { ok: false, reason: `Cooldown activo hasta ${bot.cooldown_until}` };
-  if (openTrades.some(trade => trade.bot_name === bot.name && normalizePair(trade.pair) === normalizePair(pair))) return { ok: false, reason: 'Ya existe trade abierto para este bot/par' };
+  if (openTrades.some(trade => normalizePair(trade.pair) === normalizePair(pair))) return { ok: false, reason: 'ya existe trade abierto del mismo par' };
+  if (openTrades.some(trade => trade.bot_name === bot.name && normalizePair(trade.pair) === normalizePair(pair))) return { ok: false, reason: 'ya existe trade abierto del mismo bot/par' };
+  if (ticker.spreadPct > 0.25) return { ok: false, reason: 'spread alto' };
+
   const quote = quoteCurrency(pair);
-  if (getBalanceAmount(balances, quote) < maxQuote) return { ok: false, reason: `Balance ${quote} insuficiente` };
+  const balanceQuote = getBalanceAmount(balances, quote);
+  const exposure = quoteExposure(openTrades, quote);
+  const totalQuote = balanceQuote + exposure;
+  const budgetLeft = Math.max(0, totalQuote * 0.8 - exposure);
+  const spendable = Math.max(0, balanceQuote - env.minReservedQuote);
+  const maxBotQuote = Math.min(Number(bot.max_order_quote || bot.max_order_usd || env.maxQuote), env.maxQuote);
+  const orderQuote = Math.min(maxBotQuote, spendable, budgetLeft);
+  const minQuote = minRequiredQuote(rules, ticker.price);
+  const volume = roundDown(orderQuote / ticker.price, rules.lot_decimals);
+  if (orderQuote <= 0 || balanceQuote < env.minReservedQuote) return { ok: false, reason: 'balance insuficiente', balanceQuote, orderQuote, minQuote };
+  if (orderQuote < minQuote || volume < rules.ordermin) return { ok: false, reason: 'capital insuficiente para mínimo Kraken', balanceQuote, orderQuote, minQuote };
+
+  const candles = await getCandles(pair, 5);
+  const liquidity = liquidityCheck(candles, ticker, minQuote);
+  if (!liquidity.ok) return { ok: false, reason: liquidity.reason, balanceQuote, orderQuote, minQuote };
+
+  const strategy = bot.strategy || 'default';
+  const expected = strategyRisk(strategy);
+  const estimatedFeesPct = 0.26;
+  if (ticker.spreadPct + estimatedFeesPct >= expected.takeProfitPct) return { ok: false, reason: 'fees + spread hacen imposible el TP', balanceQuote, orderQuote, minQuote };
 
   const recent = await entities.Trade.filter({ bot_name: bot.name, mode: 'live' }, '-created_date', 20);
   const today = new Date();
   today.setUTCHours(0, 0, 0, 0);
   const todayLoss = recent.filter(trade => new Date(trade.exit_date || trade.updated_date || trade.created_date).getTime() >= today.getTime()).reduce((sum, trade) => sum + Math.min(0, Number(trade.profit_loss || 0)), 0);
   const dailyLossLimit = Number(bot.daily_loss_limit || 3);
-  if (Math.abs(todayLoss) >= dailyLossLimit) return { ok: false, reason: `Pérdida diaria supera ${dailyLossLimit}` };
+  if (Math.abs(todayLoss) >= dailyLossLimit) return { ok: false, reason: 'daily loss limit alcanzado', balanceQuote, orderQuote, minQuote };
   const consecutiveLosses = recent.filter(trade => trade.status === 'closed').slice(0, 3).filter(trade => Number(trade.profit_loss || 0) < 0).length;
-  if (consecutiveLosses >= 3) return { ok: false, reason: '3 pérdidas consecutivas del bot' };
-  return { ok: true };
-}
-
-async function updateSession(entities, session, data) {
-  if (!session?.id) return;
-  try {
-    await entities.BotSession.update(session.id, data);
-  } catch (error) {
-    console.log(`Session update skipped: ${error.message}`);
-  }
-}
-
-async function getFreshSignals(entities) {
-  const now = Date.now();
-  const signals = await entities.Signal.filter({ status: 'new' }, '-created_date', 100);
-  const fresh = [];
-  for (const signal of signals) {
-    if (signal.expires_at && new Date(signal.expires_at).getTime() <= now) {
-      await entities.Signal.update(signal.id, { status: 'expired', reason: `${signal.reason || ''} · expired: superó 3 minutos` });
-    } else {
-      fresh.push(signal);
-    }
-  }
-  return fresh;
-}
-
-function rankSignals(signals) {
-  return signals
-    .filter(signal => signal.side === 'buy' && Number(signal.confidence || 0) >= 0.55)
-    .sort((a, b) => (Number(b.score || 0) - Number(a.score || 0)) || (Number(b.confidence || 0) - Number(a.confidence || 0)) || (new Date(b.created_date) - new Date(a.created_date)));
-}
-
-async function rejectSignal(entities, signal, reason) {
-  if (!signal?.id) return;
-  await entities.Signal.update(signal.id, { status: 'rejected', reason: `${signal.reason || ''} · rejected: ${reason}` });
-}
-
-async function markSignal(entities, signal, status, reason) {
-  if (!signal?.id) return;
-  await entities.Signal.update(signal.id, { status, reason: reason ? `${signal.reason || ''} · ${reason}` : signal.reason });
+  if (consecutiveLosses >= 3) return { ok: false, reason: '3 pérdidas consecutivas del bot', balanceQuote, orderQuote, minQuote };
+  return { ok: true, balanceQuote, orderQuote, minQuote, volume, liquidity };
 }
 
 Deno.serve(async (req) => {
@@ -443,10 +273,7 @@ Deno.serve(async (req) => {
     const bots = await entities.Bot.list();
     const liveBots = bots.filter(bot => bot.status === 'active' && bot.trading_mode === 'live' && bot.live_enabled === true && (bot.exchange || 'kraken') === 'kraken');
 
-    if (validateOnly) {
-      return Response.json({ ok: env.ok, ...env, liveSession: !!liveSession, liveBots: liveBots.length, message: env.ok ? 'Entorno LIVE válido' : 'Entorno LIVE incompleto o bloqueado' });
-    }
-
+    if (validateOnly) return Response.json({ ok: env.ok, ...env, liveSession: !!liveSession, liveBots: liveBots.length, supportedPairs: SUPPORTED_PAIRS, message: env.ok ? 'Entorno LIVE válido para capital bajo' : 'Entorno LIVE incompleto o bloqueado' });
     assertLiveEnv();
     if (!liveSession) return Response.json({ ok: true, skipped: true, reason: 'No hay BotSession LIVE activa', tickId: id });
     if (!runOnce && !autoMode && !forceClose) return Response.json({ error: 'Payload inválido: usa runOnce, autoMode, forceClose o validateOnly' }, { status: 400 });
@@ -466,30 +293,15 @@ Deno.serve(async (req) => {
         const ticker = await getCurrentPrice(pair);
         let decision = shouldCloseTrade(trade, ticker, forceClose, bot);
         const contrarySignal = freshSignals.find(signal => signal.side === 'sell' && signal.bot_id === bot?.id && normalizePair(signal.pair) === pair);
-        if (!decision.close && contrarySignal) {
-          decision = { close: true, reason: `Señal contraria del mismo bot: ${contrarySignal.reason}`, signalId: contrarySignal.id };
-        }
-        if (!decision.close) {
-          results.push({ action: 'monitoring', tradeId: trade.id, bot: trade.bot_name, pair: displayPair(pair), price: ticker.price, pnlPercent: decision.pnlPct, reason: decision.reason });
-          continue;
-        }
+        if (!decision.close && contrarySignal) decision = { close: true, reason: `Señal contraria del mismo bot: ${contrarySignal.reason}`, signalId: contrarySignal.id };
+        if (!decision.close) { results.push({ action: 'monitoring', tradeId: trade.id, bot: trade.bot_name, pair: displayPair(pair), price: ticker.price, pnlPercent: decision.pnlPct, reason: decision.reason }); continue; }
         const closed = await closeTradeMarket(trade, ticker.price);
         const closeOrderId = Array.isArray(closed.response.txid) ? closed.response.txid.join(',') : '';
         if (!closeOrderId) throw new Error('Kraken no devolvió txid de cierre');
         const pnl = (ticker.price - Number(trade.entry_price)) * Number(closed.volume) * (trade.side === 'buy' ? 1 : -1);
         const invested = Number(trade.entry_price) * Number(closed.volume);
         const pnlPct = invested ? (pnl / invested) * 100 : 0;
-        await entities.Trade.update(trade.id, {
-          status: 'closed',
-          exit_price: ticker.price,
-          exit_date: nowIso,
-          profit_loss: Number(pnl.toFixed(8)),
-          profit_loss_percent: Number(pnlPct.toFixed(4)),
-          close_order_id: closeOrderId,
-          closed_by_tick_id: id,
-          raw_response: JSON.stringify({ open: trade.raw_response || '', close: closed.response }),
-          notes: `LIVE cerrado: ${decision.reason}`,
-        });
+        await entities.Trade.update(trade.id, { status: 'closed', exit_price: ticker.price, exit_date: nowIso, profit_loss: Number(pnl.toFixed(8)), profit_loss_percent: Number(pnlPct.toFixed(4)), close_order_id: closeOrderId, closed_by_tick_id: id, raw_response: JSON.stringify({ open: trade.raw_response || '', close: closed.response }), notes: `LIVE cerrado: ${decision.reason}` });
         await createAlert(entities, 'Orden LIVE cerrada', `${trade.bot_name} cerró ${displayPair(pair)} · PnL ${pnl.toFixed(6)}`, pnl >= 0 ? 'success' : 'warning');
         if (decision.signalId) await markSignal(entities, { id: decision.signalId }, 'executed', 'executed: cierre por señal contraria');
         if (bot?.id) await safeBotUpdate(entities, bot.id, { last_run_at: nowIso, last_signal: `closed: ${decision.reason}`, last_error: '', cooldown_until: new Date(Date.now() + 60_000).toISOString() });
@@ -506,61 +318,32 @@ Deno.serve(async (req) => {
     freshSignals = await getFreshSignals(entities);
     if (!forceClose) {
       for (const signal of rankSignals(freshSignals)) {
+        if (openTrades.length >= env.maxOpenTrades) break;
         const bot = liveBots.find(item => item.id === signal.bot_id || item.name === signal.bot_name);
-        if (!bot) {
-          await rejectSignal(entities, signal, 'bot no activo o live_enabled false');
-          signalStats.signalsRejected += 1;
-          signalStats.reasons.push({ signalId: signal.id, bot: signal.bot_name, reason: 'bot no activo o live_enabled false' });
-          continue;
-        }
+        if (!bot) { await rejectSignal(entities, signal, 'bot no activo o live_enabled false'); signalStats.signalsRejected += 1; signalStats.reasons.push({ signalId: signal.id, bot: signal.bot_name, reason: 'bot no activo o live_enabled false' }); continue; }
         try {
           const pair = normalizePair(signal.pair);
-          const maxQuote = Math.min(Number(bot.max_order_quote || bot.max_order_usd || env.maxQuote), env.maxQuote);
-          if (maxQuote > 25) throw new Error('max_order_quote supera 25; bot bloqueado');
+          if (!SUPPORTED_PAIRS.includes(pair)) throw new Error('par no soportado por universo LIVE bajo capital');
           const ticker = await getCurrentPrice(pair);
-          if (ticker.spreadPct > 0.20) throw new Error(`spread alto ${ticker.spreadPct.toFixed(3)}%`);
-          const quote = quoteCurrency(pair);
-          const balanceQuote = getBalanceAmount(balances, quote);
-          const orderQuote = Math.min(maxQuote, balanceQuote);
-          const risk = await riskCheck(entities, bot, liveSession, pair, balances, orderQuote, openTrades);
-          if (!risk.ok) throw new Error(risk.reason);
           const rules = await getAssetPairRules(pair);
-          const volume = calculateValidVolume(orderQuote, ticker.price, rules);
-          if (!volume.ok) throw new Error(volume.reason);
+          const risk = await riskCheck({ entities, bot, session: liveSession, pair, balances, env, openTrades, ticker, rules });
+          if (!risk.ok) throw new Error(risk.reason);
 
           await markSignal(entities, signal, 'accepted', 'accepted: Risk Guardian OK');
           signalStats.signalsAccepted += 1;
-          const orderResponse = await placeMarketOrder(pair, 'buy', volume.volume);
+          const orderResponse = await placeMarketOrder(pair, 'buy', risk.volume);
           const exchangeOrderId = Array.isArray(orderResponse.txid) ? orderResponse.txid.join(',') : '';
           if (!exchangeOrderId) throw new Error('Kraken no devolvió txid de apertura');
-          const trade = await entities.Trade.create({
-            exchange: 'kraken',
-            mode: 'live',
-            bot_name: bot.name,
-            pair: displayPair(pair),
-            side: 'buy',
-            entry_price: ticker.price,
-            amount: volume.volume,
-            status: 'open',
-            stop_loss: Number((ticker.price * 0.998).toFixed(rules.pair_decimals)),
-            take_profit: Number((ticker.price * 1.0005).toFixed(rules.pair_decimals)),
-            entry_date: nowIso,
-            exchange_order_id: exchangeOrderId,
-            signal_reason: signal.reason,
-            confidence: signal.confidence,
-            fees: 0,
-            raw_response: JSON.stringify({ orderResponse, signal }),
-            opened_by_tick_id: id,
-            notes: `LIVE spot market buy desde Signal Bus · usado ${orderQuote.toFixed(2)} ${quote} · sin consenso global`,
-          });
+          const strategy = bot.strategy || signal.strategy || 'default';
+          const profile = strategyRisk(strategy);
+          const trade = await entities.Trade.create({ exchange: 'kraken', mode: 'live', bot_name: bot.name, pair: displayPair(pair), side: 'buy', entry_price: ticker.price, amount: risk.volume, status: 'open', stop_loss: Number((ticker.price * (1 - profile.stopLossPct / 100)).toFixed(rules.pair_decimals)), take_profit: Number((ticker.price * (1 + profile.takeProfitPct / 100)).toFixed(rules.pair_decimals)), entry_date: nowIso, exchange_order_id: exchangeOrderId, signal_reason: signal.reason, confidence: signal.confidence, fees: 0, raw_response: JSON.stringify({ orderResponse, signal, risk: { orderQuote: risk.orderQuote, minQuote: risk.minQuote, balanceQuote: risk.balanceQuote, avgQuoteVolume5m: risk.liquidity?.avgQuoteVolume } }), opened_by_tick_id: id, notes: `LIVE spot market buy desde Signal Bus · usado ${risk.orderQuote.toFixed(2)} ${quoteCurrency(pair)} · max ${env.maxOpenTrades} posiciones` });
           await markSignal(entities, signal, 'executed', `executed: trade ${trade.id}`);
           await safeBotUpdate(entities, bot.id, { trades_count: Number(bot.trades_count || 0) + 1, last_run_at: nowIso, last_order_at: nowIso, last_signal: `opened from signal: ${signal.reason}`, last_error: '' });
-          await createAlert(entities, 'Orden LIVE abierta por señal', `${bot.name} abrió ${displayPair(pair)} por ~${volume.cost.toFixed(2)} ${quote}`, 'success');
+          await createAlert(entities, 'Orden LIVE abierta por señal', `${bot.name} abrió ${displayPair(pair)} por ~${risk.orderQuote.toFixed(2)} ${quoteCurrency(pair)}`, 'success');
           openTrades.push(trade);
           balances = await getBalances();
           signalStats.tradesOpened += 1;
-          results.push({ action: 'opened', source: 'Signal Bus', signalId: signal.id, tradeId: trade.id, bot: bot.name, selectedPair: displayPair(pair), score: signal.score, confidence: signal.confidence, entryPrice: ticker.price, quoteUsed: orderQuote, quoteCurrency: quote, exchangeOrderId, reason: signal.reason, rawResponse: orderResponse });
-          break;
+          results.push({ action: 'opened', source: 'Signal Bus', signalId: signal.id, tradeId: trade.id, bot: bot.name, selectedPair: displayPair(pair), score: signal.score, confidence: signal.confidence, entryPrice: ticker.price, quoteUsed: risk.orderQuote, minRequiredQuote: risk.minQuote, availableQuote: risk.balanceQuote, maxOpenTrades: env.maxOpenTrades, openTrades: openTrades.length, exchangeOrderId, reason: signal.reason, rawResponse: orderResponse });
         } catch (error) {
           await rejectSignal(entities, signal, error.message);
           if (bot?.id) await safeBotUpdate(entities, bot.id, { last_run_at: nowIso, last_signal: `signal rejected: ${error.message}`, last_error: '' });
@@ -574,7 +357,7 @@ Deno.serve(async (req) => {
     const closedTrades = await entities.Trade.filter({ mode: 'live', status: 'closed' }, '-created_date', 100);
     const totalPnl = closedTrades.reduce((sum, trade) => sum + Number(trade.profit_loss || 0), 0);
     await updateSession(entities, liveSession, { last_tick_at: nowIso, total_trades: closedTrades.length + openTrades.length, total_pnl: Number(totalPnl.toFixed(8)), last_error: '' });
-    return Response.json({ ok: true, tickId: id, executionTick: nowIso, autoMode, runOnce, forceClose, env: { maxQuote: env.maxQuote, intervalMinutes: env.intervalMinutes }, scannedBots: liveBots.length, signalsAccepted: signalStats.signalsAccepted, signalsRejected: signalStats.signalsRejected, tradesOpened: signalStats.tradesOpened, tradesClosed: signalStats.tradesClosed, reasons: signalStats.reasons, results });
+    return Response.json({ ok: true, tickId: id, executionTick: nowIso, autoMode, runOnce, forceClose, env: { maxQuote: env.maxQuote, maxOpenTrades: env.maxOpenTrades, minReservedQuote: env.minReservedQuote, intervalMinutes: env.intervalMinutes }, scannedPairs: SUPPORTED_PAIRS, openTrades: openTrades.length, signalsAccepted: signalStats.signalsAccepted, signalsRejected: signalStats.signalsRejected, tradesOpened: signalStats.tradesOpened, tradesClosed: signalStats.tradesClosed, reasons: signalStats.reasons, results });
   } catch (error) {
     try {
       const base44 = createClientFromRequest(req);

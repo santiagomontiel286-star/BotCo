@@ -57,6 +57,21 @@
     "expires_at": {
       "type": "string"
     },
+    "min_required_quote": {
+      "type": "number"
+    },
+    "available_quote": {
+      "type": "number"
+    },
+    "order_quote": {
+      "type": "number"
+    },
+    "spread_pct": {
+      "type": "number"
+    },
+    "volume_score": {
+      "type": "number"
+    },
     "raw_data": {
       "type": "string"
     }
