@@ -86,6 +86,12 @@
     "raw_response": {
       "type": "string"
     },
+    "opened_by_tick_id": {
+      "type": "string"
+    },
+    "closed_by_tick_id": {
+      "type": "string"
+    },
     "notes": {
       "type": "string"
     }

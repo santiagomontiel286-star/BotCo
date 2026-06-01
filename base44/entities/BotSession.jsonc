@@ -13,13 +13,20 @@
     "started_at": {
       "type": "string"
     },
+    "stopped_at": {
+      "type": "string"
+    },
+    "last_tick_at": {
+      "type": "string"
+    },
     "mode": {
       "type": "string",
       "enum": [
         "real",
+        "live",
         "demo"
       ],
-      "default": "real"
+      "default": "live"
     },
     "risk_profile": {
       "type": "string",
@@ -47,6 +54,9 @@
     "total_trades": {
       "type": "number",
       "default": 0
+    },
+    "last_error": {
+      "type": "string"
     }
   },
   "required": [

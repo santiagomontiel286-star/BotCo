@@ -32,14 +32,16 @@ export default function useBotSession() {
         setAssignedCapital(s.assigned_capital || 0);
         setSessionMode(s.mode || "real");
         setStartedAt(new Date(s.started_at || s.created_date).getTime());
-        const prev = load();
-        sessionStorage.setItem(KEY, JSON.stringify({
-          active: true,
-          assignedCapital: s.assigned_capital,
-          startedAt: new Date(s.started_at || s.created_date).getTime(),
-          initialBalance: prev?.initialBalance || s.assigned_capital || 0,
-          mode: s.mode || "real",
-        }));
+        if (s.mode !== "live") {
+          const prev = load();
+          sessionStorage.setItem(KEY, JSON.stringify({
+            active: true,
+            assignedCapital: s.assigned_capital,
+            startedAt: new Date(s.started_at || s.created_date).getTime(),
+            initialBalance: prev?.initialBalance || s.assigned_capital || 0,
+            mode: s.mode || "real",
+          }));
+        }
       }
     }).catch(() => {});
   }, []);
@@ -47,7 +49,7 @@ export default function useBotSession() {
   const activate = async (amount, krakenBalance = 0, mode = "real") => {
     const savedProfile = localStorage.getItem("botco_risk_profile") || "conservador";
     const session = { active: true, assignedCapital: amount, startedAt: Date.now(), initialBalance: krakenBalance, mode };
-    sessionStorage.setItem(KEY, JSON.stringify(session));
+    if (mode !== "live") sessionStorage.setItem(KEY, JSON.stringify(session));
     setActive(true);
     setAssignedCapital(amount);
     setInitialBalance(krakenBalance);

@@ -15,10 +15,11 @@ export default function History() {
   const { data: trades = [], isLoading } = useQuery({ queryKey: ["trades", activeMode], queryFn: () => base44.entities.Trade.filter({ mode: activeMode }, "-created_date", 50) });
 
   const filtered = statusFilter === "all" ? trades : trades.filter(trade => trade.status === statusFilter);
-  const totalPnL = trades.reduce((sum, trade) => sum + (trade.profit_loss || 0), 0);
-  const wins = trades.filter(trade => (trade.profit_loss || 0) > 0).length;
-  const winRate = trades.length ? (wins / trades.length * 100) : 0;
-  const equityCurve = [...trades].reverse().reduce((rows, trade, index) => {
+  const closedTrades = trades.filter(trade => trade.status === "closed");
+  const totalPnL = closedTrades.reduce((sum, trade) => sum + (trade.profit_loss || 0), 0);
+  const wins = closedTrades.filter(trade => (trade.profit_loss || 0) > 0).length;
+  const winRate = closedTrades.length ? (wins / closedTrades.length * 100) : 0;
+  const equityCurve = [...closedTrades].reverse().reduce((rows, trade, index) => {
     const previous = rows[index - 1]?.equity || 0;
     rows.push({ t: new Date(trade.entry_date || trade.created_date).toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" }), equity: Number((previous + (trade.profit_loss || 0)).toFixed(6)) });
     return rows;

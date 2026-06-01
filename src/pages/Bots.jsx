@@ -1,173 +1,132 @@
 import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { base44 } from "@/api/base44Client";
 import BotCard from "../components/BotCard";
 import useKrakenData from "../hooks/useKrakenData";
+import { Button } from "@/components/ui/button";
+import { Activity, AlertTriangle, Power, RefreshCw, ShieldCheck, Square, XCircle } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
 export default function Bots() {
   const queryClient = useQueryClient();
+  const [runningAction, setRunningAction] = useState(false);
   const [liveResult, setLiveResult] = useState(null);
-  const [runningLiveTest, setRunningLiveTest] = useState(false);
-  const { data: bots = [], isLoading } = useQuery({ queryKey: ["bots"], queryFn: () => base44.entities.Bot.list() });
+  const { data: bots = [], isLoading } = useQuery({ queryKey: ["bots"], queryFn: () => base44.entities.Bot.list(), refetchInterval: 15000 });
+  const { data: sessions = [] } = useQuery({ queryKey: ["botSessionsLive"], queryFn: () => base44.entities.BotSession.filter({ active: true }), refetchInterval: 15000 });
+  const { data: openTrades = [] } = useQuery({ queryKey: ["openLiveTrades"], queryFn: () => base44.entities.Trade.filter({ mode: "live", status: "open" }, "-created_date", 20), refetchInterval: 10000 });
+  const { data: liveEnv } = useQuery({ queryKey: ["liveEnvStatus"], queryFn: async () => (await base44.functions.invoke("tradingTick", { validateOnly: true })).data, refetchInterval: 30000 });
   const { totalUSD, trades: krakenTrades } = useKrakenData({ intervalMs: 60000 });
 
-  const updateBot = useMutation({
-    mutationFn: ({ id, data }) => base44.entities.Bot.update(id, data),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["bots"] }),
-  });
+  const activeLiveSession = sessions.find(session => session.mode === "live");
+  const liveBots = bots.filter(bot => bot.trading_mode === "live" && bot.live_enabled === true);
+  const lastTickAt = activeLiveSession?.last_tick_at || activeLiveSession?.started_at;
+  const totalRealPnl = openTrades.reduce((sum, trade) => sum + Number(trade.profit_loss || 0), 0);
 
-  const handleStart = (bot) => {
-    if (bot.trading_mode === "live") {
-      const confirmed = window.confirm("Vas a activar un bot en LIVE. Solo operará si KRAKEN_LIVE_TRADING=true y respeta MAX_ORDER_USD. ¿Confirmas?");
-      if (!confirmed) return;
-      updateBot.mutate({ id: bot.id, data: { status: "active", live_enabled: true } });
-      toast.warning("Bot LIVE activado con confirmación");
-      return;
-    }
-    updateBot.mutate({ id: bot.id, data: { status: "active", trading_mode: "demo", live_enabled: false } });
-    toast.success("Bot DEMO iniciado");
-  };
-
-  const handlePause = (id) => { updateBot.mutate({ id, data: { status: "paused" } }); toast.info("Bot pausado"); };
-  const handleStop  = (id) => { updateBot.mutate({ id, data: { status: "stopped", live_enabled: false } }); toast.error("Bot detenido"); };
-
-  const handleModeChange = (bot, trading_mode) => {
-    updateBot.mutate({ id: bot.id, data: { trading_mode, live_enabled: false } });
-    toast.info(trading_mode === "demo" ? "Modo DEMO seleccionado" : "Modo LIVE seleccionado; requiere confirmación al iniciar");
-  };
-
-  const handleTradingTick = async () => {
-    const response = await base44.functions.invoke("tradingTick", {});
+  const refreshAll = () => {
     queryClient.invalidateQueries({ queryKey: ["bots"] });
-    toast.success(`Ciclo ejecutado: ${response.data.results?.length || 0} resultados`);
+    queryClient.invalidateQueries({ queryKey: ["botSessionsLive"] });
+    queryClient.invalidateQueries({ queryKey: ["openLiveTrades"] });
+    queryClient.invalidateQueries({ queryKey: ["liveEnvStatus"] });
   };
 
-  const ensureLiveBot = async () => {
-    const current = bots.find(bot => bot.status === "active") || bots[0];
-    if (!current) throw new Error("No hay bots configurados para activar");
-    await base44.entities.Bot.update(current.id, {
-      status: "active",
-      trading_mode: "live",
-      live_enabled: true,
-      strategy: "first_live_trade",
-      max_order_usd: 10,
-      pairs: ["XBTUSD"],
-      last_error: "",
-    });
-    return current;
-  };
-
-  const handleFirstLiveTrade = async () => {
-    const confirmed = window.confirm("Confirmo que quiero ejecutar una operación REAL en Kraken con capital bajo");
-    if (!confirmed) return;
-    setRunningLiveTest(true);
+  const runAction = async (label, fn) => {
+    setRunningAction(true);
     setLiveResult(null);
     try {
-      await ensureLiveBot();
-      const response = await base44.functions.invoke("tradingTick", { firstLiveTrade: true });
-      setLiveResult(response.data);
-      queryClient.invalidateQueries({ queryKey: ["bots"] });
-      toast.success("Operación REAL enviada a Kraken");
+      const response = await fn();
+      setLiveResult(response.data || response);
+      refreshAll();
+      toast.success(label);
     } catch (error) {
       const message = error?.response?.data?.error || error.message;
       setLiveResult({ error: message });
       toast.error(message);
     } finally {
-      setRunningLiveTest(false);
+      setRunningAction(false);
     }
   };
 
-  const handleForceCloseLiveTrade = async () => {
-    const confirmed = window.confirm("¿Cerrar ahora cualquier operación REAL abierta en Kraken con orden market contraria?");
+  const handleValidate = () => runAction("Entorno LIVE validado", () => base44.functions.invoke("tradingTick", { validateOnly: true }));
+
+  const handleStartLive = () => {
+    const confirmed = window.confirm("Confirmo que quiero activar trading real en Kraken con capital bajo y sin retiros");
     if (!confirmed) return;
-    setRunningLiveTest(true);
-    setLiveResult(null);
-    try {
-      const response = await base44.functions.invoke("tradingTick", { forceClose: true });
-      setLiveResult(response.data);
-      queryClient.invalidateQueries({ queryKey: ["bots"] });
-      toast.success("Cierre REAL solicitado");
-    } catch (error) {
-      const message = error?.response?.data?.error || error.message;
-      setLiveResult({ error: message });
-      toast.error(message);
-    } finally {
-      setRunningLiveTest(false);
-    }
+    runAction("Bots LIVE activados", () => base44.functions.invoke("startLiveBots", {}));
   };
+
+  const handleStopLive = () => runAction("Bots LIVE detenidos", () => base44.functions.invoke("stopLiveBots", { closeOpenTrades: false }));
+  const handleCloseOpenTrades = () => runAction("Cierre de operaciones solicitado", () => base44.functions.invoke("tradingTick", { forceClose: true }));
+  const handleRunCycle = () => runAction("Ciclo LIVE ejecutado", () => base44.functions.invoke("tradingTick", { runOnce: true, autoMode: true }));
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="w-8 h-8 border-4 border-primary/30 border-t-primary rounded-full animate-spin" />
-      </div>
-    );
+    return <div className="flex items-center justify-center h-64"><div className="w-8 h-8 border-4 border-primary/30 border-t-primary rounded-full animate-spin" /></div>;
   }
 
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <h2 className="text-2xl font-bold text-foreground tracking-tight">Control de Bots</h2>
-          <p className="text-sm text-muted-foreground mt-1">Modo por defecto DEMO. LIVE requiere confirmación y variables de entorno.</p>
+          <h2 className="text-2xl font-bold text-foreground tracking-tight">Control de Bots LIVE</h2>
+          <p className="text-sm text-muted-foreground mt-1">Trading real continuo con Kraken Spot, capital bajo y gestión automática por tradingTick.</p>
         </div>
         <div className="flex gap-2 flex-wrap">
-          <button onClick={handleTradingTick} className="px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-colors">
-            Ejecutar ciclo trading
-          </button>
-          <button disabled={runningLiveTest} onClick={handleFirstLiveTrade} className="px-4 py-2 rounded-lg bg-destructive text-destructive-foreground text-sm font-semibold hover:bg-destructive/90 transition-colors disabled:opacity-50">
-            Ejecutar primera operación REAL hoy
-          </button>
-          <button disabled={runningLiveTest} onClick={handleForceCloseLiveTrade} className="px-4 py-2 rounded-lg border border-destructive/50 text-destructive text-sm font-semibold hover:bg-destructive/10 transition-colors disabled:opacity-50">
-            Cerrar operación REAL ahora
-          </button>
+          <Button disabled={runningAction} onClick={handleValidate} variant="outline" className="gap-2"><ShieldCheck className="w-4 h-4" />Validar entorno LIVE</Button>
+          <Button disabled={runningAction} onClick={handleStartLive} className="gap-2 bg-destructive hover:bg-destructive/90"><Power className="w-4 h-4" />Activar Bots LIVE</Button>
+          <Button disabled={runningAction} onClick={handleRunCycle} variant="outline" className="gap-2"><RefreshCw className={cn("w-4 h-4", runningAction && "animate-spin")} />Ejecutar ciclo ahora</Button>
+          <Button disabled={runningAction} onClick={handleCloseOpenTrades} variant="outline" className="gap-2 border-destructive/50 text-destructive hover:bg-destructive/10"><XCircle className="w-4 h-4" />Cerrar operaciones abiertas</Button>
+          <Button disabled={runningAction} onClick={handleStopLive} variant="outline" className="gap-2"><Square className="w-4 h-4" />Detener Bots LIVE</Button>
+        </div>
+      </div>
+
+      <div className="grid lg:grid-cols-4 gap-3">
+        <div className="bg-card rounded-xl border border-border p-4">
+          <span className="text-xs text-muted-foreground uppercase tracking-wider">Entorno LIVE</span>
+          <div className="flex items-center gap-2 mt-2">
+            <div className={cn("w-2 h-2 rounded-full", liveEnv?.ok ? "bg-primary animate-pulse" : "bg-destructive")} />
+            <span className={cn("text-sm font-semibold", liveEnv?.ok ? "text-primary" : "text-destructive")}>{liveEnv?.ok ? "Validado" : "Bloqueado"}</span>
+          </div>
+          {!liveEnv?.ok && <p className="text-[11px] text-muted-foreground mt-2">Revisa variables LIVE antes de operar.</p>}
+        </div>
+        <div className="bg-card rounded-xl border border-border p-4"><span className="text-xs text-muted-foreground uppercase tracking-wider">Sesión activa</span><p className="text-xl font-mono font-bold text-foreground mt-1">{activeLiveSession ? "LIVE" : "—"}</p><p className="text-[11px] text-muted-foreground">Último tick: {lastTickAt ? new Date(lastTickAt).toLocaleTimeString("es-ES") : "—"}</p></div>
+        <div className="bg-card rounded-xl border border-border p-4"><span className="text-xs text-muted-foreground uppercase tracking-wider">Bots LIVE</span><p className="text-xl font-mono font-bold text-primary mt-1">{liveBots.length}<span className="text-muted-foreground text-sm">/{bots.length}</span></p></div>
+        <div className="bg-card rounded-xl border border-border p-4"><span className="text-xs text-muted-foreground uppercase tracking-wider">Operaciones abiertas</span><p className="text-xl font-mono font-bold text-foreground mt-1">{openTrades.length}</p><p className={cn("text-[11px]", totalRealPnl >= 0 ? "text-profit" : "text-loss")}>PnL registrado: {totalRealPnl.toFixed(6)}</p></div>
+      </div>
+
+      <div className="bg-card rounded-xl border border-border p-5">
+        <div className="flex items-center gap-2 mb-3"><Activity className="w-4 h-4 text-primary" /><h3 className="text-sm font-semibold text-foreground">Estado automático</h3></div>
+        <div className="grid sm:grid-cols-3 gap-3 text-xs">
+          <div className="bg-muted/50 rounded-lg p-3"><span className="text-muted-foreground">Scheduler Base44</span><p className="font-semibold text-foreground mt-1">tradingTick cada {liveEnv?.intervalMinutes || 5} min</p></div>
+          <div className="bg-muted/50 rounded-lg p-3"><span className="text-muted-foreground">Máx. por orden</span><p className="font-semibold text-foreground mt-1">{liveEnv?.maxQuote || 10} USD/EUR</p></div>
+          <div className="bg-muted/50 rounded-lg p-3"><span className="text-muted-foreground">Kraken</span><p className="font-semibold text-foreground mt-1">Spot · sin leverage · sin margin · sin futures</p></div>
         </div>
       </div>
 
       {liveResult && (
         <div className="bg-card rounded-xl border border-border p-4">
-          <h3 className="text-sm font-semibold text-foreground mb-2">Resultado operación REAL</h3>
-          {liveResult.error ? (
-            <p className="text-sm text-destructive">{liveResult.error}</p>
-          ) : (
-            <div className="space-y-2 text-xs">
-              {(liveResult.results || []).map((result, index) => (
-                <div key={index} className="rounded-lg bg-muted/40 border border-border p-3 grid sm:grid-cols-5 gap-2">
-                  <span><strong>Acción:</strong> {result.action}</span>
-                  <span><strong>Par:</strong> {result.pair}</span>
-                  <span><strong>Precio:</strong> {result.entryPrice || result.exitPrice || result.price || "—"}</span>
-                  <span><strong>Volumen:</strong> {result.volume || "—"}</span>
-                  <span><strong>Orden:</strong> {result.exchangeOrderId || result.closeOrderId || "—"}</span>
-                  {result.error && <span className="sm:col-span-5 text-destructive"><strong>Error:</strong> {result.error}</span>}
-                  {result.pnl != null && <span className="sm:col-span-5"><strong>PnL:</strong> {result.pnl.toFixed(6)} ({result.pnlPercent?.toFixed?.(4)}%)</span>}
-                </div>
-              ))}
-            </div>
-          )}
+          <h3 className="text-sm font-semibold text-foreground mb-2">Resultado LIVE</h3>
+          {liveResult.error ? <p className="text-sm text-destructive">{liveResult.error}</p> : <pre className="text-xs bg-muted/40 border border-border rounded-lg p-3 overflow-auto max-h-80">{JSON.stringify(liveResult, null, 2)}</pre>}
+        </div>
+      )}
+
+      {openTrades.length > 0 && (
+        <div className="bg-card rounded-xl border border-border p-5">
+          <h3 className="text-sm font-semibold text-foreground mb-3">Operaciones LIVE abiertas</h3>
+          <div className="grid md:grid-cols-2 gap-3">
+            {openTrades.map(trade => <div key={trade.id} className="rounded-lg border border-border bg-muted/30 p-3 text-xs"><div className="flex justify-between"><span className="font-semibold text-foreground">{trade.bot_name}</span><span className="font-mono">{trade.pair}</span></div><div className="grid grid-cols-3 gap-2 mt-2 text-muted-foreground"><span>Entrada: {trade.entry_price}</span><span>Vol: {Number(trade.amount || 0).toFixed(8)}</span><span>Orden: {trade.exchange_order_id || "—"}</span></div></div>)}
+          </div>
         </div>
       )}
 
       <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        {bots.map(bot => (
-          <BotCard key={bot.id} bot={bot} onStart={handleStart} onPause={handlePause} onStop={handleStop} onModeChange={handleModeChange} totalKrakenUSD={totalUSD} krakenTrades={krakenTrades} />
-        ))}
+        {bots.map(bot => <BotCard key={bot.id} bot={bot} totalKrakenUSD={totalUSD} krakenTrades={krakenTrades} />)}
       </div>
 
-      {bots.length === 0 && (
-        <div className="text-center py-16 bg-card rounded-xl border border-border">
-          <p className="text-muted-foreground">Aún no hay bots configurados</p>
-          <p className="text-xs text-muted-foreground mt-1">Los bots se crearán automáticamente al iniciar</p>
-        </div>
-      )}
+      {bots.length === 0 && <div className="text-center py-16 bg-card rounded-xl border border-border"><p className="text-muted-foreground">Aún no hay bots configurados</p></div>}
 
-      <div className="bg-card rounded-xl border border-border p-5">
-        <h3 className="text-sm font-semibold text-foreground mb-3">Reglas de Riesgo Globales</h3>
-        <div className="grid sm:grid-cols-3 gap-4 text-xs">
-          <div className="p-3 rounded-lg bg-muted/50"><span className="text-muted-foreground">Primera prueba LIVE</span><p className="font-mono font-bold text-chart-3 text-lg mt-1">$10 máx.</p></div>
-          <div className="p-3 rounded-lg bg-muted/50"><span className="text-muted-foreground">Sin leverage</span><p className="font-mono font-bold text-foreground text-lg mt-1">Spot only</p></div>
-          <div className="p-3 rounded-lg bg-muted/50"><span className="text-muted-foreground">Cierre automático</span><p className="font-mono font-bold text-destructive text-lg mt-1">10 min</p></div>
-        </div>
+      <div className="flex items-start gap-2 bg-chart-3/10 border border-chart-3/20 rounded-xl p-4">
+        <AlertTriangle className="w-4 h-4 text-chart-3 flex-shrink-0 mt-0.5" />
+        <p className="text-xs text-chart-3 leading-relaxed">LIVE opera con dinero real. Los límites activos bloquean órdenes mayores a 25, múltiples trades por bot/par, spread alto, capital insuficiente y pérdidas consecutivas.</p>
       </div>
     </div>
   );

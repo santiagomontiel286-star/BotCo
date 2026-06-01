@@ -46,6 +46,7 @@
       "type": "string",
       "enum": [
         "first_live_trade",
+        "micro_scalp",
         "micro_scalp_test",
         "ema_cross",
         "mean_reversion"
@@ -54,11 +55,23 @@
     },
     "timeframe": {
       "type": "number",
-      "default": 15
+      "default": 5
     },
     "max_order_usd": {
       "type": "number",
       "default": 10
+    },
+    "max_order_quote": {
+      "type": "number",
+      "default": 10
+    },
+    "quote_currency": {
+      "type": "string",
+      "enum": [
+        "USD",
+        "EUR"
+      ],
+      "default": "USD"
     },
     "capital": {
       "type": "number",
@@ -99,7 +112,7 @@
     },
     "take_profit": {
       "type": "number",
-      "default": 0.1
+      "default": 0.05
     },
     "trailing_stop": {
       "type": "number",
@@ -124,6 +137,12 @@
       "type": "string"
     },
     "last_error": {
+      "type": "string"
+    },
+    "last_order_at": {
+      "type": "string"
+    },
+    "cooldown_until": {
       "type": "string"
     },
     "icon_color": {
