@@ -45,6 +45,8 @@
     "strategy": {
       "type": "string",
       "enum": [
+        "first_live_trade",
+        "micro_scalp_test",
         "ema_cross",
         "mean_reversion"
       ],
@@ -56,7 +58,7 @@
     },
     "max_order_usd": {
       "type": "number",
-      "default": 25
+      "default": 10
     },
     "capital": {
       "type": "number",
@@ -93,11 +95,11 @@
     },
     "stop_loss": {
       "type": "number",
-      "default": 2
+      "default": 0.2
     },
     "take_profit": {
       "type": "number",
-      "default": 3
+      "default": 0.1
     },
     "trailing_stop": {
       "type": "number",

@@ -2,7 +2,8 @@ import { createClientFromRequest } from 'npm:@base44/sdk@0.8.25';
 
 const KRAKEN_API = 'https://api.kraken.com';
 const LIVE_TRADING = Deno.env.get('KRAKEN_LIVE_TRADING') === 'true';
-const GLOBAL_MAX_ORDER_USD = Number(Deno.env.get('MAX_ORDER_USD') || '25');
+const ALLOW_FIRST_LIVE_TRADE = Deno.env.get('ALLOW_FIRST_LIVE_TRADE') === 'true';
+const GLOBAL_MAX_ORDER_USD = Number(Deno.env.get('MAX_ORDER_USD') || '10');
 
 let lastNonce = 0;
 
@@ -14,236 +15,275 @@ function nextNonce() {
 
 async function signKraken(path, postData, secret) {
   const nonce = new URLSearchParams(postData).get('nonce') || '';
-  const secretBuffer = Uint8Array.from(atob(secret), c => c.charCodeAt(0));
-  const sha256Hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(nonce + postData));
-  const message = new Uint8Array([
-    ...new TextEncoder().encode(path),
-    ...new Uint8Array(sha256Hash),
-  ]);
-  const key = await crypto.subtle.importKey('raw', secretBuffer, { name: 'HMAC', hash: 'SHA-512' }, false, ['sign']);
+  const secretBytes = Uint8Array.from(atob(secret), c => c.charCodeAt(0));
+  const sha256 = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(nonce + postData));
+  const pathBytes = new TextEncoder().encode(path);
+  const message = new Uint8Array(pathBytes.length + sha256.byteLength);
+  message.set(pathBytes, 0);
+  message.set(new Uint8Array(sha256), pathBytes.length);
+  const key = await crypto.subtle.importKey('raw', secretBytes, { name: 'HMAC', hash: 'SHA-512' }, false, ['sign']);
   const signature = await crypto.subtle.sign('HMAC', key, message);
   return btoa(String.fromCharCode(...new Uint8Array(signature)));
 }
 
-async function krakenPrivate(path, params = {}) {
+async function krakenPrivate(endpoint, params = {}) {
   const apiKey = Deno.env.get('KRAKEN_API_KEY');
   const apiSecret = Deno.env.get('KRAKEN_API_SECRET');
   if (!apiKey || !apiSecret) throw new Error('Faltan KRAKEN_API_KEY o KRAKEN_API_SECRET');
 
-  const body = new URLSearchParams();
-  body.set('nonce', nextNonce());
-  for (const [key, value] of Object.entries(params)) body.set(key, String(value));
-
+  const path = `/0/private/${endpoint}`;
+  const body = new URLSearchParams({ nonce: nextNonce(), ...params });
   const postData = body.toString();
-  const signature = await signKraken(path, postData, apiSecret);
-  const res = await fetch(`${KRAKEN_API}${path}`, {
+  const response = await fetch(`${KRAKEN_API}${path}`, {
     method: 'POST',
     headers: {
       'API-Key': apiKey,
-      'API-Sign': signature,
+      'API-Sign': await signKraken(path, postData, apiSecret),
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: postData,
   });
-  const json = await res.json();
-  if (json.error?.length) throw new Error(json.error.join(', '));
-  return json.result;
-}
-
-async function krakenPublic(path, params = {}) {
-  const url = new URL(`${KRAKEN_API}${path}`);
-  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
-  const res = await fetch(url);
-  const json = await res.json();
-  if (json.error?.length) throw new Error(json.error.join(', '));
-  return json.result;
-}
-
-function ema(values, period) {
-  const k = 2 / (period + 1);
-  let current = values[0];
-  for (let i = 1; i < values.length; i++) current = values[i] * k + current * (1 - k);
-  return current;
-}
-
-function getSignal(closes, strategy = 'ema_cross') {
-  if (closes.length < 60) return { action: 'hold', confidence: 0, reason: 'No hay suficientes velas' };
-  const previous = closes.slice(0, -1);
-  const price = closes[closes.length - 1];
-
-  if (strategy === 'mean_reversion') {
-    const recent = closes.slice(-20);
-    const average = recent.reduce((sum, value) => sum + value, 0) / recent.length;
-    const deviation = (price - average) / average;
-    if (deviation < -0.012) return { action: 'buy', confidence: 0.62, reason: 'Reversión a la media: precio bajo media 20', price };
-    if (deviation > 0.012) return { action: 'sell', confidence: 0.62, reason: 'Reversión a la media: precio sobre media 20', price };
-    return { action: 'hold', confidence: 0.5, reason: 'Sin desviación suficiente de la media', price };
+  const json = await response.json();
+  if (json.error?.length) {
+    const message = json.error.join(', ');
+    if (message.toLowerCase().includes('volume')) throw new Error('Volumen inferior al mínimo de Kraken para este par');
+    throw new Error(message);
   }
-
-  const fast = ema(closes, 20);
-  const slow = ema(closes, 50);
-  const prevFast = ema(previous, 20);
-  const prevSlow = ema(previous, 50);
-
-  if (prevFast <= prevSlow && fast > slow) return { action: 'buy', confidence: 0.68, reason: 'Cruce alcista EMA20 sobre EMA50', price };
-  if (prevFast >= prevSlow && fast < slow) return { action: 'sell', confidence: 0.68, reason: 'Cruce bajista EMA20 bajo EMA50', price };
-  return { action: 'hold', confidence: 0.5, reason: 'Sin cruce confirmado', price };
+  return json.result;
 }
 
-async function getCandles(pair, interval) {
-  const data = await krakenPublic('/0/public/OHLC', { pair, interval });
-  const key = Object.keys(data).find(k => k !== 'last');
-  const rows = data[key] || [];
-  return rows.map(c => ({
-    time: Number(c[0]),
-    open: Number(c[1]),
-    high: Number(c[2]),
-    low: Number(c[3]),
-    close: Number(c[4]),
-    volume: Number(c[6]),
-  }));
+async function krakenPublic(endpoint, params = {}) {
+  const url = new URL(`${KRAKEN_API}/0/public/${endpoint}`);
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
+  const response = await fetch(url);
+  const json = await response.json();
+  if (json.error?.length) throw new Error(json.error.join(', '));
+  return json.result;
 }
 
-function getQuoteCurrency(pair) {
-  if (pair.endsWith('EUR')) return 'EUR';
-  return 'USD';
+function normalizePair(pair) {
+  const value = String(pair || 'XBTUSD').replace('/', '').toUpperCase();
+  if (value === 'BTCUSD') return 'XBTUSD';
+  if (value === 'BTCEUR') return 'XBTEUR';
+  return value;
 }
 
-async function getQuoteBalance(pair) {
-  const balance = await krakenPrivate('/0/private/Balance');
-  const quote = getQuoteCurrency(pair);
-  if (quote === 'EUR') return Number(balance.ZEUR || balance.EUR || 0);
+function displayPair(pair) {
+  const value = normalizePair(pair);
+  if (value === 'XBTUSD') return 'BTC/USD';
+  if (value === 'XBTEUR') return 'BTC/EUR';
+  if (value === 'ETHUSD') return 'ETH/USD';
+  if (value === 'ETHEUR') return 'ETH/EUR';
+  return value;
+}
+
+async function getCurrentPrice(pair) {
+  const result = await krakenPublic('Ticker', { pair });
+  const key = Object.keys(result)[0];
+  const ticker = result[key];
+  const ask = Number(ticker.a?.[0] || 0);
+  const bid = Number(ticker.b?.[0] || 0);
+  const last = Number(ticker.c?.[0] || 0);
+  if (!last || !ask || !bid || ask <= bid) throw new Error('Precio/spread inválido en Kraken');
+  return { price: last, bid, ask, spreadPct: ((ask - bid) / last) * 100 };
+}
+
+async function getCandles(pair, interval = 1) {
+  const result = await krakenPublic('OHLC', { pair, interval });
+  const key = Object.keys(result).find(k => k !== 'last');
+  return (result[key] || []).map(row => ({ close: Number(row[4]), time: Number(row[0]) }));
+}
+
+async function getUsdBalance() {
+  const balance = await krakenPrivate('Balance');
   return Number(balance.ZUSD || balance.USD || 0);
 }
 
-function calcVolume(orderValue, price) {
-  return Math.floor((orderValue / price) * 100000000) / 100000000;
+function calcVolume(maxOrderUsd, currentPrice) {
+  return Math.floor((maxOrderUsd / currentPrice) * 100000000) / 100000000;
 }
 
-async function placeKrakenMarketOrder(params) {
-  return krakenPrivate('/0/private/AddOrder', {
-    pair: params.pair,
-    type: params.side,
+async function placeMarketOrder(pair, side, volume) {
+  return krakenPrivate('AddOrder', {
+    pair,
+    type: side,
     ordertype: 'market',
-    volume: params.volume,
+    volume: volume.toFixed(8),
   });
 }
 
-async function getTodayLoss(base44, bot, mode) {
-  const startOfDay = new Date();
-  startOfDay.setHours(0, 0, 0, 0);
-  const trades = await base44.entities.Trade.filter({ bot_name: bot.name, mode, status: 'closed' }, '-created_date', 100);
-  return trades
-    .filter(trade => new Date(trade.exit_date || trade.updated_date || trade.created_date) >= startOfDay)
-    .reduce((sum, trade) => sum + Math.min(0, Number(trade.profit_loss || 0)), 0);
+async function closePosition(trade) {
+  return placeMarketOrder(normalizePair(trade.pair), trade.side === 'buy' ? 'sell' : 'buy', Number(trade.amount || 0));
+}
+
+function shouldCloseTrade(trade, currentPrice, forceClose) {
+  if (forceClose) return { close: true, reason: 'Cierre manual solicitado por usuario' };
+  const entry = Number(trade.entry_price || 0);
+  if (!entry) return { close: false, reason: 'Sin precio de entrada válido' };
+  const isBuy = trade.side === 'buy';
+  const pnlPct = ((currentPrice - entry) / entry) * (isBuy ? 1 : -1) * 100;
+  const ageMs = Date.now() - new Date(trade.entry_date || trade.created_date).getTime();
+  if (pnlPct >= 0.10) return { close: true, reason: 'Objetivo +0.10% alcanzado', pnlPct };
+  if (pnlPct <= -0.20) return { close: true, reason: 'Stop -0.20% alcanzado', pnlPct };
+  if (ageMs >= 10 * 60 * 1000) return { close: true, reason: 'Cierre por tiempo máximo de 10 minutos', pnlPct };
+  if (trade.stop_loss && currentPrice <= Number(trade.stop_loss)) return { close: true, reason: 'Precio bajo stop calculado', pnlPct };
+  return { close: false, reason: 'Operación abierta en seguimiento', pnlPct };
+}
+
+async function updateBotError(base44, bot, message) {
+  await base44.entities.Bot.update(bot.id, {
+    last_run_at: new Date().toISOString(),
+    last_error: message,
+  });
 }
 
 Deno.serve(async (req) => {
   try {
     const base44 = createClientFromRequest(req);
     const user = await base44.auth.me();
-
     if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
+    const payload = await req.json().catch(() => ({}));
+    const forceClose = payload.forceClose === true;
+    const firstLiveTrade = payload.firstLiveTrade === true;
+    const validateOnly = payload.validateOnly === true;
+
     const bots = await base44.entities.Bot.list();
-    const activeBots = bots.filter(bot => bot.status === 'active' && (bot.exchange || 'kraken') === 'kraken');
+    const liveBots = bots.filter(bot =>
+      bot.status === 'active' &&
+      (bot.exchange || 'kraken') === 'kraken' &&
+      bot.trading_mode === 'live' &&
+      bot.live_enabled === true
+    );
+
+    if (validateOnly) {
+      return Response.json({ liveTradingEnv: LIVE_TRADING, allowFirstLiveTrade: ALLOW_FIRST_LIVE_TRADE, maxOrderUsd: GLOBAL_MAX_ORDER_USD, liveBots: liveBots.length });
+    }
+
+    if (!LIVE_TRADING) return Response.json({ error: 'KRAKEN_LIVE_TRADING debe ser true para operar LIVE' }, { status: 403 });
+    if (firstLiveTrade && !ALLOW_FIRST_LIVE_TRADE) return Response.json({ error: 'ALLOW_FIRST_LIVE_TRADE debe ser true para la primera operación real' }, { status: 403 });
+    if (GLOBAL_MAX_ORDER_USD > 10) return Response.json({ error: 'MAX_ORDER_USD no puede superar 10 durante la prueba inicial' }, { status: 403 });
+    if (!liveBots.length && !forceClose) return Response.json({ error: 'No hay bots activos LIVE con live_enabled=true' }, { status: 400 });
+
+    const openLiveTrades = await base44.entities.Trade.filter({ mode: 'live', status: 'open' }, '-created_date', 20);
     const results = [];
 
-    for (const bot of activeBots) {
-      const pair = bot.pairs?.[0] || 'XBTUSD';
-      const interval = Number(bot.timeframe || 15);
-      const mode = bot.trading_mode || 'demo';
+    if (openLiveTrades.length > 0) {
+      for (const trade of openLiveTrades) {
+        const pair = normalizePair(trade.pair);
+        const bot = bots.find(item => item.name === trade.bot_name) || liveBots[0];
+        const ticker = await getCurrentPrice(pair);
+        const closeDecision = shouldCloseTrade(trade, ticker.price, forceClose);
 
-      try {
-        const candles = await getCandles(pair, interval);
-        const closes = candles.map(c => c.close);
-        const signal = getSignal(closes, bot.strategy || 'ema_cross');
-
-        if (signal.action === 'hold') {
-          await base44.entities.Bot.update(bot.id, {
-            last_run_at: new Date().toISOString(),
-            last_signal: signal.reason,
-            last_error: '',
-          });
-          results.push({ bot: bot.name, pair, mode, action: 'hold', reason: signal.reason });
+        if (!closeDecision.close) {
+          results.push({ action: 'monitoring', tradeId: trade.id, pair: displayPair(pair), price: ticker.price, pnlPercent: closeDecision.pnlPct, reason: closeDecision.reason });
           continue;
         }
 
-        const price = signal.price || closes[closes.length - 1];
-        const maxBotOrderUsd = Number(bot.max_order_usd || GLOBAL_MAX_ORDER_USD);
-        const orderUsd = Math.min(maxBotOrderUsd, GLOBAL_MAX_ORDER_USD);
-        if (orderUsd <= 0) throw new Error('max_order_usd inválido');
+        const closeResponse = await closePosition(trade);
+        const closeOrderId = Array.isArray(closeResponse.txid) ? closeResponse.txid.join(',') : '';
+        const pnl = trade.side === 'buy'
+          ? (ticker.price - Number(trade.entry_price)) * Number(trade.amount)
+          : (Number(trade.entry_price) - ticker.price) * Number(trade.amount);
+        const pnlPct = ((pnl / (Number(trade.entry_price) * Number(trade.amount))) * 100) || 0;
 
-        const todayLoss = await getTodayLoss(base44, bot, mode);
-        const dailyLossLimit = Number(bot.daily_loss_limit || 0);
-        if (dailyLossLimit > 0 && Math.abs(todayLoss) >= dailyLossLimit) {
-          throw new Error(`Límite de pérdida diaria alcanzado (${todayLoss.toFixed(2)})`);
-        }
-
-        let quoteBalance = orderUsd;
-        if (mode === 'live') {
-          if (!LIVE_TRADING) throw new Error('KRAKEN_LIVE_TRADING no está activado');
-          if (bot.live_enabled !== true) throw new Error('El bot no tiene live_enabled=true');
-          quoteBalance = await getQuoteBalance(pair);
-          if (quoteBalance < orderUsd) throw new Error(`Balance ${getQuoteCurrency(pair)} insuficiente`);
-        }
-
-        const volume = calcVolume(orderUsd, price);
-        if (volume <= 0) throw new Error('Volumen calculado inválido');
-
-        let exchangeOrderId = '';
-        let rawResponse = null;
-
-        if (mode === 'live') {
-          const order = await placeKrakenMarketOrder({ pair, side: signal.action, volume });
-          rawResponse = order;
-          exchangeOrderId = Array.isArray(order.txid) ? order.txid.join(',') : '';
-        }
-
-        const tradeData = {
-          bot_name: bot.name,
-          exchange: 'kraken',
-          mode,
-          pair,
-          side: signal.action,
-          entry_price: price,
-          amount: volume,
-          status: mode === 'live' ? 'open' : 'closed',
-          entry_date: new Date().toISOString(),
-          exchange_order_id: exchangeOrderId,
-          signal_reason: signal.reason,
-          confidence: signal.confidence,
-          fees: 0,
-          raw_response: rawResponse ? JSON.stringify(rawResponse) : '',
-          notes: `${mode.toUpperCase()} | ${signal.reason}`,
-        };
-
-        if (mode === 'demo') {
-          tradeData.exit_price = price;
-          tradeData.exit_date = new Date().toISOString();
-          tradeData.profit_loss = 0;
-          tradeData.profit_loss_percent = 0;
-        }
-
-        await base44.entities.Trade.create(tradeData);
-        await base44.entities.Bot.update(bot.id, {
-          trades_count: Number(bot.trades_count || 0) + 1,
-          last_run_at: new Date().toISOString(),
-          last_signal: `${signal.action}: ${signal.reason}`,
-          last_error: '',
+        await base44.entities.Trade.update(trade.id, {
+          status: 'closed',
+          exit_price: ticker.price,
+          exit_date: new Date().toISOString(),
+          profit_loss: Number(pnl.toFixed(6)),
+          profit_loss_percent: Number(pnlPct.toFixed(4)),
+          close_order_id: closeOrderId,
+          fees: Number(trade.fees || 0),
+          raw_response: JSON.stringify({ open: trade.raw_response || '', close: closeResponse }),
+          notes: `LIVE cerrado: ${closeDecision.reason}`,
         });
 
-        results.push({ bot: bot.name, pair, mode, action: signal.action, price, volume, orderUsd, live: mode === 'live', exchangeOrderId });
-      } catch (error) {
-        await base44.entities.Bot.update(bot.id, {
-          last_run_at: new Date().toISOString(),
-          last_error: error.message,
-        });
-        results.push({ bot: bot.name, pair, mode, action: 'error', error: error.message });
+        if (bot?.id) {
+          await base44.entities.Bot.update(bot.id, {
+            last_run_at: new Date().toISOString(),
+            last_signal: `closed: ${closeDecision.reason}`,
+            last_error: '',
+          });
+        }
+
+        results.push({ action: 'closed', tradeId: trade.id, pair: displayPair(pair), exitPrice: ticker.price, pnl, pnlPercent: pnlPct, closeOrderId, rawResponse: closeResponse });
       }
+      return Response.json({ liveTradingEnv: LIVE_TRADING, maxOrderUsd: GLOBAL_MAX_ORDER_USD, results });
     }
 
-    return Response.json({ liveTradingEnv: LIVE_TRADING, maxOrderUsd: GLOBAL_MAX_ORDER_USD, activeBots: activeBots.length, results });
+    if (forceClose) return Response.json({ message: 'No hay operaciones LIVE abiertas para cerrar', results: [] });
+    if (!firstLiveTrade) return Response.json({ message: 'Sin acción LIVE: usa firstLiveTrade=true para abrir la primera operación real', results: [] });
+
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const recentLiveTrades = await base44.entities.Trade.filter({ mode: 'live' }, '-created_date', 20);
+    const firstTradeAlreadyUsedToday = recentLiveTrades.some(trade =>
+      (trade.signal_reason || '').includes('first_live_trade') &&
+      new Date(trade.entry_date || trade.created_date).getTime() >= todayStart.getTime()
+    );
+    if (firstLiveTrade && firstTradeAlreadyUsedToday) {
+      return Response.json({ error: 'La primera operación LIVE de prueba ya fue usada hoy' }, { status: 409 });
+    }
+
+    const bot = liveBots[0];
+    const pair = normalizePair(bot.pairs?.[0] || 'XBTUSD');
+
+    try {
+      if (bot.strategy !== 'first_live_trade') throw new Error('El bot debe usar strategy=first_live_trade');
+      const orderUsd = Math.min(Number(bot.max_order_usd || 10), GLOBAL_MAX_ORDER_USD, 10);
+      if (orderUsd <= 0 || orderUsd > 10) throw new Error('max_order_usd debe estar entre 0 y 10 para esta prueba');
+
+      const ticker = await getCurrentPrice(pair);
+      await getCandles(pair, 1);
+      const usdBalance = await getUsdBalance();
+      if (usdBalance < orderUsd) throw new Error(`Balance USD insuficiente en Kraken: ${usdBalance.toFixed(2)} USD`);
+
+      const volume = calcVolume(orderUsd, ticker.price);
+      if (volume <= 0) throw new Error('Volumen inferior al mínimo de Kraken para este par');
+
+      const orderResponse = await placeMarketOrder(pair, 'buy', volume);
+      const exchangeOrderId = Array.isArray(orderResponse.txid) ? orderResponse.txid.join(',') : '';
+      const stopLoss = Number((ticker.price * 0.998).toFixed(2));
+      const takeProfit = Number((ticker.price * 1.001).toFixed(2));
+
+      const trade = await base44.entities.Trade.create({
+        exchange: 'kraken',
+        mode: 'live',
+        bot_name: bot.name,
+        pair: displayPair(pair),
+        side: 'buy',
+        entry_price: ticker.price,
+        amount: volume,
+        status: 'open',
+        stop_loss: stopLoss,
+        take_profit: takeProfit,
+        entry_date: new Date().toISOString(),
+        exchange_order_id: exchangeOrderId,
+        signal_reason: 'first_live_trade: validación ciclo real completo',
+        confidence: 1,
+        fees: 0,
+        raw_response: JSON.stringify(orderResponse),
+        notes: `LIVE first_live_trade · orden máxima ${orderUsd} USD · sin leverage/margin/futuros`,
+      });
+
+      await base44.entities.Bot.update(bot.id, {
+        trades_count: Number(bot.trades_count || 0) + 1,
+        last_run_at: new Date().toISOString(),
+        last_signal: `opened first_live_trade @ ${ticker.price}`,
+        last_error: '',
+      });
+
+      return Response.json({
+        liveTradingEnv: LIVE_TRADING,
+        allowFirstLiveTrade: ALLOW_FIRST_LIVE_TRADE,
+        maxOrderUsd: GLOBAL_MAX_ORDER_USD,
+        results: [{ action: 'opened', tradeId: trade.id, bot: bot.name, pair: displayPair(pair), entryPrice: ticker.price, volume, exchangeOrderId, rawResponse: orderResponse }],
+      });
+    } catch (error) {
+      await updateBotError(base44, bot, error.message);
+      return Response.json({ error: error.message, results: [{ bot: bot.name, pair: displayPair(pair), action: 'error', error: error.message }] }, { status: 400 });
+    }
   } catch (error) {
     return Response.json({ error: error.message }, { status: 500 });
   }
