@@ -1,7 +1,7 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.25';
 
 const KRAKEN_API = 'https://api.kraken.com';
-const PAIRS = ['ADAEUR', 'XRPEUR', 'DOTEUR', 'LINKEUR', 'ATOMEUR', 'SOLEUR'];
+const PAIRS = ['ETHEUR', 'ADAEUR', 'XRPEUR', 'SOLEUR', 'DOTEUR', 'LINKEUR', 'ATOMEUR', 'XBTEUR'];
 const QUOTE_KEYS = { USD: ['ZUSD', 'USD'], EUR: ['ZEUR', 'EUR'] };
 let lastNonce = 0;
 const publicCache = new Map();
@@ -88,6 +88,14 @@ function quoteExposure(openTrades, quote) {
   return openTrades.filter(trade => quoteCurrency(trade.pair) === quote).reduce((sum, trade) => sum + Number(trade.entry_price || 0) * Number(trade.amount || 0), 0);
 }
 
+function capitalProfile(capital) {
+  if (capital >= 50000) return { name: 'institucional', minScore: 85, pairs: ['XBTEUR', 'ETHEUR'] };
+  if (capital >= 5000) return { name: 'alto', minScore: 80, pairs: ['XBTEUR', 'ETHEUR', 'SOLEUR'] };
+  if (capital >= 500) return { name: 'medio', minScore: 75, pairs: PAIRS };
+  if (capital >= 50) return { name: 'pequeño', minScore: 70, pairs: PAIRS };
+  return { name: 'micro', minScore: 65, pairs: ['ETHEUR', 'XRPEUR', 'ADAEUR', 'SOLEUR'] };
+}
+
 function capitalPlan(pair, balances, openTrades, maxQuote, minReserved) {
   const quote = quoteCurrency(pair);
   const balanceQuote = getBalanceAmount(balances, quote);
@@ -141,6 +149,8 @@ async function evaluateCandidate({ bot, pair, balances, openTrades, maxQuote, mi
   const normalizedPair = normalizePair(pair);
   const strategy = bot.strategy || bot.type || 'ema_cross';
   const plan = capitalPlan(normalizedPair, balances, openTrades, maxQuote, minReserved);
+  const profile = capitalProfile(plan.balanceQuote + plan.exposure);
+  if (!profile.pairs.includes(normalizedPair)) throw new Error(`perfil ${profile.name}: par no prioritario`);
   if (openTrades.some(trade => normalizePair(trade.pair) === normalizedPair)) throw new Error('ya existe trade abierto del mismo par');
   if (openTrades.some(trade => trade.bot_name === bot.name && normalizePair(trade.pair) === normalizedPair)) throw new Error('ya existe trade abierto del mismo bot/par');
 
@@ -158,10 +168,10 @@ async function evaluateCandidate({ bot, pair, balances, openTrades, maxQuote, mi
   const positionScore = 10;
   const recencyScore = 5;
   const score = Math.min(100, technical.technicalScore + spreadScore + liquidity.score + capitalScore + positionScore + recencyScore);
-  const status = technical.side === 'hold' || score < 55 || technical.confidence < 0.55 ? 'rejected' : 'new';
-  const reason = status === 'new' ? technical.reason : `${technical.reason} · score ${score}/55`;
+  const status = technical.side === 'hold' || score < profile.minScore || technical.confidence < 0.55 ? 'rejected' : 'new';
+  const reason = status === 'new' ? `SentinelAI Pro ${profile.name}: ${technical.reason}` : `${technical.reason} · score ${score}/${profile.minScore}`;
 
-  return { bot, pair: normalizedPair, strategy, ticker, rules, candles, plan, minQuote, volume, liquidity, technical, score, status, reason };
+  return { bot, pair: normalizedPair, strategy: 'SentinelAI Pro v2', ticker, rules, candles, plan: { ...plan, profile }, minQuote, volume, liquidity, technical, score, status, reason };
 }
 
 Deno.serve(async (req) => {
@@ -240,7 +250,7 @@ Deno.serve(async (req) => {
         order_quote: Number(item.plan.orderQuote.toFixed(8)),
         spread_pct: Number(item.ticker.spreadPct.toFixed(4)),
         volume_score: item.liquidity.score,
-        raw_data: JSON.stringify({ scannedPairs: PAIRS, parallel: true, ordermin: item.rules.ordermin, costmin: item.rules.costmin, lotDecimals: item.rules.lot_decimals, pairDecimals: item.rules.pair_decimals, avgQuoteVolume5m: item.liquidity.avgQuoteVolume, balanceQuote: item.plan.balanceQuote, exposureQuote: item.plan.exposure, maxQuote, minReserved })
+        raw_data: JSON.stringify({ masterStrategy: 'SentinelAI Pro v2', profile: item.plan.profile, scannedPairs: PAIRS, parallel: true, ordermin: item.rules.ordermin, costmin: item.rules.costmin, lotDecimals: item.rules.lot_decimals, pairDecimals: item.rules.pair_decimals, avgQuoteVolume5m: item.liquidity.avgQuoteVolume, balanceQuote: item.plan.balanceQuote, exposureQuote: item.plan.exposure, maxQuote, minReserved })
       });
       created.push(signal);
     }
