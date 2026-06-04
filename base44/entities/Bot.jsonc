@@ -53,6 +53,18 @@
       ],
       "default": "ema_cross"
     },
+    "master_strategy_version": {
+      "type": "string",
+      "default": "BotCo Master Strategy v1"
+    },
+    "master_strategy_instructions": {
+      "type": "string",
+      "description": "Institutional trading doctrine used by BotCo bots"
+    },
+    "min_signal_score": {
+      "type": "number",
+      "default": 75
+    },
     "timeframe": {
       "type": "number",
       "default": 5

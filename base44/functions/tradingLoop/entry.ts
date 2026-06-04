@@ -5,13 +5,29 @@ const SUPPORTED_PAIRS = ['ADAEUR', 'XRPEUR', 'DOTEUR', 'LINKEUR', 'ATOMEUR', 'SO
 const QUOTE_KEYS = { USD: ['ZUSD', 'USD'], EUR: ['ZEUR', 'EUR'] };
 const ASSET_KEYS = { SOL: ['SOL'], XRP: ['XXRP', 'XRP'], ADA: ['ADA'], DOT: ['DOT'], LINK: ['LINK'], ATOM: ['ATOM'] };
 const DISPLAY_PAIRS = { SOLEUR: 'SOL/EUR', XRPEUR: 'XRP/EUR', ADAEUR: 'ADA/EUR', DOTEUR: 'DOT/EUR', LINKEUR: 'LINK/EUR', ATOMEUR: 'ATOM/EUR' };
+const MASTER_STRATEGY = {
+  version: 'BotCo Master Strategy v1',
+  role: 'Sistema profesional de análisis y ejecución algorítmica con prioridad absoluta en preservación de capital.',
+  minScore: 75,
+  minRiskReward: 2,
+  preferredRiskReward: 3,
+  weights: { trend: 25, momentum: 20, volume: 15, volatility: 15, macro: 15, sentiment: 10 },
+  rules: [
+    'No operar si la confianza es insuficiente.',
+    'Nunca operar sin stop loss.',
+    'Evitar spreads anormales, baja liquidez y sobreoperación.',
+    'No duplicar tamaño para recuperar pérdidas.',
+    'Priorizar rendimiento ajustado al riesgo sobre ganancias rápidas.'
+  ]
+};
+
 const STRATEGY_RISK = {
-  micro_scalp: { timeoutMinutes: 45, takeProfitPct: 1.00, stopLossPct: 0.70 },
-  micro_scalp_test: { timeoutMinutes: 45, takeProfitPct: 1.00, stopLossPct: 0.70 },
-  ema_cross: { timeoutMinutes: 90, takeProfitPct: 1.20, stopLossPct: 0.90 },
-  mean_reversion: { timeoutMinutes: 60, takeProfitPct: 1.00, stopLossPct: 0.80 },
-  first_live_trade: { timeoutMinutes: 45, takeProfitPct: 1.00, stopLossPct: 0.70 },
-  default: { timeoutMinutes: 60, takeProfitPct: 1.00, stopLossPct: 0.80 }
+  micro_scalp: { timeoutMinutes: 45, takeProfitPct: 1.60, stopLossPct: 0.70 },
+  micro_scalp_test: { timeoutMinutes: 45, takeProfitPct: 1.60, stopLossPct: 0.70 },
+  ema_cross: { timeoutMinutes: 120, takeProfitPct: 2.00, stopLossPct: 0.90 },
+  mean_reversion: { timeoutMinutes: 90, takeProfitPct: 1.80, stopLossPct: 0.80 },
+  first_live_trade: { timeoutMinutes: 60, takeProfitPct: 1.60, stopLossPct: 0.70 },
+  default: { timeoutMinutes: 90, takeProfitPct: 1.80, stopLossPct: 0.80 }
 };
 
 let lastNonce = 0;
@@ -37,7 +53,7 @@ function envConfig() {
   const required = ['KRAKEN_API_KEY', 'KRAKEN_API_SECRET', 'KRAKEN_LIVE_TRADING', 'BOTCO_LIVE_ENABLED'];
   const missing = required.filter(name => !Deno.env.get(name));
   const maxQuote = Math.min(Number(Deno.env.get('MAX_LIVE_ORDER_QUOTE') || '8'), 8);
-  const maxOpenTrades = Math.min(Number(Deno.env.get('MAX_OPEN_LIVE_TRADES') || '2'), 2);
+  const maxOpenTrades = Math.min(Number(Deno.env.get('MAX_OPEN_LIVE_TRADES') || '5'), 5);
   const minReservedQuote = Math.max(Number(Deno.env.get('MIN_RESERVED_QUOTE') || '4'), 4);
   const intervalMinutes = Math.max(5, Number(Deno.env.get('BOTCO_AUTOTRADE_INTERVAL_MINUTES') || '5'));
   const krakenLiveTrading = toBool(Deno.env.get('KRAKEN_LIVE_TRADING'));
@@ -115,7 +131,7 @@ async function getAssetPairRules(pair) {
 async function getCandles(pair, interval = 5) {
   const result = await krakenPublic('OHLC', { pair: normalizePair(pair), interval });
   const key = Object.keys(result).find(item => item !== 'last');
-  return (result[key] || []).slice(-72).map(row => ({ time: Number(row[0]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]), volume: Number(row[6]) }));
+  return (result[key] || []).slice(-240).map(row => ({ time: Number(row[0]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]), volume: Number(row[6]) }));
 }
 
 function liquidityCheck(candles, ticker, minQuote) {
@@ -126,27 +142,76 @@ function liquidityCheck(candles, ticker, minQuote) {
   return { ok: true, score: Math.min(15, Math.round(avgQuoteVolume / Math.max(minQuote, 1))), reason: 'volumen OK', avgQuoteVolume };
 }
 
-function evaluateTechnical(bot, candles, ticker) {
+function average(values) { return values.reduce((sum, value) => sum + value, 0) / Math.max(values.length, 1); }
+function standardDeviation(values) { const mean = average(values); return Math.sqrt(average(values.map(value => (value - mean) ** 2))); }
+function roc(values, period = 12) { if (values.length <= period) return 0; const prev = values[values.length - period - 1]; return prev ? ((values[values.length - 1] - prev) / prev) * 100 : 0; }
+function atr(candles, period = 14) {
+  const slice = candles.slice(-period - 1);
+  if (slice.length < 2) return 0;
+  const ranges = [];
+  for (let i = 1; i < slice.length; i++) ranges.push(Math.max(slice[i].high - slice[i].low, Math.abs(slice[i].high - slice[i - 1].close), Math.abs(slice[i].low - slice[i - 1].close)));
+  return average(ranges);
+}
+function macd(values) {
+  const line = ema(values.slice(-80), 12) - ema(values.slice(-80), 26);
+  const signal = ema(values.slice(-35).map((_, index, arr) => ema(values.slice(0, values.length - arr.length + index + 1), 12) - ema(values.slice(0, values.length - arr.length + index + 1), 26)), 9);
+  return { line, signal, histogram: line - signal };
+}
+function adxProxy(candles, period = 14) {
+  const recent = candles.slice(-period - 1);
+  if (recent.length < 2) return 0;
+  let directional = 0;
+  let range = 0;
+  for (let i = 1; i < recent.length; i++) { directional += Math.abs(recent[i].close - recent[i - 1].close); range += recent[i].high - recent[i].low; }
+  return range ? Math.min(50, (directional / range) * 50) : 0;
+}
+function marketStructure(candles, ticker) {
+  const recent = candles.slice(-36);
+  const highs = recent.map(candle => candle.high);
+  const lows = recent.map(candle => candle.low);
+  const resistance = Math.max(...highs.slice(0, -1));
+  const support = Math.min(...lows.slice(0, -1));
+  const breakout = ticker.price > resistance;
+  const falseBreak = recent.at(-1)?.high > resistance && ticker.price < resistance;
+  const liquiditySweep = recent.at(-1)?.low < support && ticker.price > support;
+  return { support, resistance, breakout, falseBreak, liquiditySweep };
+}
+
+function evaluateTechnical(bot, candles, ticker, liquidity) {
   const closes = candles.map(c => c.close);
   const strategy = bot.strategy || bot.type || 'ema_cross';
-  const ema9 = ema(closes.slice(-30), 9);
-  const ema21 = ema(closes.slice(-60), 21);
-  const ema9Prev = ema(closes.slice(-31, -1), 9);
   const currentRsi = rsi(closes);
-  const recent = candles.slice(-3);
-  const fallingFast = recent.length === 3 && ((recent[0].close - recent[2].close) / recent[0].close) * 100 > 0.35;
-  const recovering = recent.length === 3 && recent[2].close > recent[1].close && recent[1].close >= recent[0].close;
-  const high12 = Math.max(...candles.slice(-13, -1).map(c => c.high));
-  const return25m = closes.length > 5 ? ((closes[closes.length - 1] - closes[closes.length - 6]) / closes[closes.length - 6]) * 100 : 0;
+  const currentRoc = roc(closes, 12);
+  const currentMacd = macd(closes);
+  const currentAtr = atr(candles);
+  const atrPct = ticker.price ? (currentAtr / ticker.price) * 100 : 0;
+  const adx = adxProxy(candles);
+  const ema20 = ema(closes, 20);
+  const ema50 = ema(closes, 50);
+  const ema100 = ema(closes, 100);
+  const ema200 = ema(closes, 200);
+  const bbSlice = closes.slice(-20);
+  const bbMean = average(bbSlice);
+  const bbWidthPct = ticker.price ? ((standardDeviation(bbSlice) * 4) / ticker.price) * 100 : 0;
+  const structure = marketStructure(candles, ticker);
+  const macroScore = 8;
+  const sentimentScore = Math.min(MASTER_STRATEGY.weights.sentiment, Math.max(0, (bot.type === 'ai_sentiment' ? 4 : 2) + (currentRoc > 0 ? 4 : 0) + (currentMacd.histogram > 0 ? 2 : 0)));
 
-  if (bot.type === 'risk_guardian') return { side: 'hold', confidence: 0.7, technicalScore: 20, reason: 'risk_guardian: control delegado al Execution Engine' };
-  if (strategy.includes('first_live_trade')) return { side: 'buy', confidence: 0.58, technicalScore: 28, reason: 'first_live_trade: señal conservadora' };
-  if (strategy.includes('micro') && !fallingFast && currentRsi < 68 && (recovering || return25m > 0.08)) return { side: 'buy', confidence: 0.61, technicalScore: 34, reason: `micro_scalp BUY: RSI ${currentRsi.toFixed(1)}, retorno 25m ${return25m.toFixed(3)}%` };
-  if ((strategy.includes('mean') || bot.type === 'mean_reversion') && currentRsi < 42 && !fallingFast) return { side: 'buy', confidence: 0.6, technicalScore: 32, reason: `mean_reversion BUY: RSI ${currentRsi.toFixed(1)}` };
-  if ((strategy.includes('momentum') || bot.type === 'ai_sentiment') && (return25m > 0.12 || ticker.price > high12)) return { side: 'buy', confidence: 0.6, technicalScore: 33, reason: `momentum BUY: retorno 25m ${return25m.toFixed(3)}%` };
-  if (ema9 > ema21 && ema9 > ema9Prev && currentRsi < 72) return { side: 'buy', confidence: 0.6, technicalScore: 35, reason: `ema_cross BUY: EMA9 ${ema9.toFixed(4)} > EMA21 ${ema21.toFixed(4)}` };
-  if (ema9 < ema21) return { side: 'sell', confidence: 0.56, technicalScore: 22, reason: `ema_cross SELL: EMA9 ${ema9.toFixed(4)} < EMA21 ${ema21.toFixed(4)}` };
-  return { side: 'hold', confidence: 0.4, technicalScore: 8, reason: 'Sin señal técnica suficiente' };
+  const bullishTrend = ticker.price > ema200 && ema20 > ema50 && ema50 >= ema100;
+  const bearishTrend = ticker.price < ema100 && ema20 < ema50;
+  const trendScore = bullishTrend ? 25 : ticker.price > ema200 && ema20 > ema50 ? 20 : ticker.price > ema50 ? 14 : 5;
+  const momentumScore = Math.min(20, Math.max(0, (currentRsi >= 45 && currentRsi <= 68 ? 7 : currentRsi < 35 ? 3 : 0) + (currentMacd.histogram > 0 ? 6 : 0) + (currentRoc > 0.08 ? 5 : 0) + (adx > 18 ? 2 : 0)));
+  const volumeScore = Math.min(15, liquidity?.score || 0);
+  const volatilityScore = atrPct > 0.05 && atrPct < 2.5 && bbWidthPct < 8 ? 15 : atrPct < 4 ? 9 : 3;
+  const priceActionBonus = structure.breakout || structure.liquiditySweep ? 5 : structure.falseBreak ? -8 : 0;
+  const score = Math.max(0, Math.min(100, trendScore + momentumScore + volumeScore + volatilityScore + macroScore + sentimentScore + priceActionBonus));
+
+  const meanReversionValid = (strategy.includes('mean') || bot.type === 'mean_reversion') && currentRsi < 38 && ticker.price > structure.support && !structure.falseBreak && !bearishTrend;
+  const trendEntryValid = bullishTrend && momentumScore >= 12 && !structure.falseBreak;
+  const side = (trendEntryValid || meanReversionValid) && score >= MASTER_STRATEGY.minScore ? 'buy' : bearishTrend ? 'sell' : 'hold';
+  const confidence = Number((score / 100).toFixed(2));
+  const reason = `${MASTER_STRATEGY.version}: ${side.toUpperCase()} score ${score}/100 · tendencia ${trendScore}/25 · momentum ${momentumScore}/20 · volumen ${volumeScore}/15 · volatilidad ${volatilityScore}/15 · macro ${macroScore}/15 · sentimiento ${sentimentScore}/10 · RSI ${currentRsi.toFixed(1)} · RR mínimo 1:${MASTER_STRATEGY.minRiskReward}`;
+  return { side, confidence, technicalScore: score, score, scoreComponents: { trendScore, momentumScore, volumeScore, volatilityScore, macroScore, sentimentScore, priceActionBonus, atrPct, bbWidthPct, adx, support: structure.support, resistance: structure.resistance }, reason };
 }
 
 async function placeMarketOrder(pair, side, volume) { return krakenPrivate('AddOrder', { pair: normalizePair(pair), type: side, ordertype: 'market', volume: String(volume), validate: 'false' }); }
@@ -217,7 +282,7 @@ async function getFreshSignals(entities) {
 }
 
 function rankSignals(signals) {
-  return signals.filter(signal => signal.side === 'buy' && Number(signal.score || 0) >= 55 && Number(signal.confidence || 0) >= 0.55).sort((a, b) => (Number(b.score || 0) - Number(a.score || 0)) || (Number(b.confidence || 0) - Number(a.confidence || 0)) || (new Date(b.created_date) - new Date(a.created_date)));
+  return signals.filter(signal => signal.side === 'buy' && Number(signal.score || 0) >= MASTER_STRATEGY.minScore && Number(signal.confidence || 0) >= 0.65).sort((a, b) => (Number(b.score || 0) - Number(a.score || 0)) || (Number(b.confidence || 0) - Number(a.confidence || 0)) || (new Date(b.created_date) - new Date(a.created_date)));
 }
 
 async function evaluateCandidate({ bot, pair, balances, openTrades, existingSignals, env }) {
@@ -238,12 +303,11 @@ async function evaluateCandidate({ bot, pair, balances, openTrades, existingSign
   if (orderQuote < minQuote || volume < rules.ordermin) throw new Error('capital insuficiente para mínimo Kraken');
   const liquidity = liquidityCheck(candles, ticker, minQuote);
   if (!liquidity.ok) throw new Error(liquidity.reason);
-  const technical = evaluateTechnical(bot, candles, ticker);
-  const spreadScore = Math.max(0, Math.round(20 - ticker.spreadPct * 70));
-  const score = Math.min(100, technical.technicalScore + spreadScore + liquidity.score + 35);
-  const status = technical.side === 'buy' && score >= 55 && technical.confidence >= 0.55 ? 'new' : 'rejected';
-  const reason = status === 'new' ? technical.reason : `${technical.reason} · score ${score}/55`;
-  return { bot, pair: normalizedPair, strategy: bot.strategy || bot.type || 'ema_cross', ticker, rules, plan: { balanceQuote, exposure, orderQuote }, minQuote, liquidity, technical, score, status, reason };
+  const technical = evaluateTechnical(bot, candles, ticker, liquidity);
+  const score = technical.score;
+  const status = technical.side === 'buy' && score >= MASTER_STRATEGY.minScore && technical.confidence >= 0.65 ? 'new' : 'rejected';
+  const reason = status === 'new' ? technical.reason : `${technical.reason} · no operar: score mínimo ${MASTER_STRATEGY.minScore}`;
+  return { bot, pair: normalizedPair, strategy: MASTER_STRATEGY.version, ticker, rules, plan: { balanceQuote, exposure, orderQuote }, minQuote, liquidity, technical, score, status, reason };
 }
 
 async function runScanner(entities, liveSession, liveBots, balances, openTrades, env) {
@@ -286,7 +350,7 @@ async function runScanner(entities, liveSession, liveBots, balances, openTrades,
       order_quote: Number(item.plan.orderQuote.toFixed(8)),
       spread_pct: Number(item.ticker.spreadPct.toFixed(4)),
       volume_score: item.liquidity.score,
-      raw_data: JSON.stringify({ scannedPairs: SUPPORTED_PAIRS, avgQuoteVolume5m: item.liquidity.avgQuoteVolume, balanceQuote: item.plan.balanceQuote, exposureQuote: item.plan.exposure, maxQuote: env.maxQuote, minReservedQuote: env.minReservedQuote })
+      raw_data: JSON.stringify({ masterStrategy: MASTER_STRATEGY, scoreComponents: item.technical.scoreComponents, scannedPairs: SUPPORTED_PAIRS, avgQuoteVolume5m: item.liquidity.avgQuoteVolume, balanceQuote: item.plan.balanceQuote, exposureQuote: item.plan.exposure, maxQuote: env.maxQuote, minReservedQuote: env.minReservedQuote })
     });
     created.push(signal);
   }
@@ -317,6 +381,7 @@ async function riskCheck({ entities, bot, session, pair, balances, env, openTrad
   const liquidity = liquidityCheck(candles, ticker, minQuote);
   if (!liquidity.ok) return { ok: false, reason: liquidity.reason, balanceQuote, orderQuote, minQuote };
   const expected = adjustedRisk(bot.strategy || 'default', ticker.spreadPct);
+  if (expected.takeProfitPct < expected.stopLossPct * MASTER_STRATEGY.minRiskReward) return { ok: false, reason: 'RR inferior al mínimo institucional 1:2', balanceQuote, orderQuote, minQuote };
   if (ticker.spreadPct + expected.estimatedRoundTripFeesPct >= expected.takeProfitPct) return { ok: false, reason: 'TP no cubre fees + spread', balanceQuote, orderQuote, minQuote };
   const recent = await entities.Trade.filter({ bot_name: bot.name, mode: 'live' }, '-created_date', 20);
   const today = new Date();
@@ -347,7 +412,7 @@ Deno.serve(async (req) => {
     const bots = await entities.Bot.list();
     const liveBots = bots.filter(bot => bot.status === 'active' && bot.trading_mode === 'live' && bot.live_enabled === true && (bot.exchange || 'kraken') === 'kraken');
 
-    if (validateOnly) return Response.json({ ok: env.ok, ...env, liveSession: !!liveSession, liveBots: liveBots.length, supportedPairs: SUPPORTED_PAIRS, message: env.ok ? 'tradingLoop LIVE unificado válido' : 'Entorno LIVE incompleto o bloqueado' });
+    if (validateOnly) return Response.json({ ok: env.ok, ...env, masterStrategy: MASTER_STRATEGY.version, minScore: MASTER_STRATEGY.minScore, liveSession: !!liveSession, liveBots: liveBots.length, supportedPairs: SUPPORTED_PAIRS, message: env.ok ? 'tradingLoop LIVE con Prompt Maestro activo' : 'Entorno LIVE incompleto o bloqueado' });
     assertLiveEnv();
     if (!liveSession) return Response.json({ ok: true, skipped: true, reason: 'No hay BotSession LIVE activa', tickId: id });
     if (!runOnce && !autoMode && !forceClose) return Response.json({ error: 'Payload inválido: usa runOnce, autoMode, forceClose o validateOnly' }, { status: 400 });
