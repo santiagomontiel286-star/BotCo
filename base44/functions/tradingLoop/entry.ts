@@ -52,7 +52,7 @@ function capitalProfile(capital) {
   if (capital >= 5000) return { name: 'alto', minScore: 80, maxOpenTrades: 4, takeProfitPct: 1.00, stopLossPct: 0.50, pairs: ['XBTEUR', 'ETHEUR', 'SOLEUR'] };
   if (capital >= 500) return { name: 'medio', minScore: 75, maxOpenTrades: 3, takeProfitPct: 0.80, stopLossPct: 0.40, pairs: SUPPORTED_PAIRS };
   if (capital >= 50) return { name: 'pequeño', minScore: 70, maxOpenTrades: 2, takeProfitPct: 0.45, stopLossPct: 0.25, pairs: SUPPORTED_PAIRS };
-  return { name: 'micro', minScore: 65, maxOpenTrades: 1, takeProfitPct: 0.30, stopLossPct: 0.18, pairs: ['ETHEUR', 'XRPEUR', 'ADAEUR', 'SOLEUR'] };
+  return { name: 'pequeño', minScore: 60, maxOpenTrades: 2, takeProfitPct: 0.45, stopLossPct: 0.25, pairs: ['ETHEUR', 'XRPEUR', 'ADAEUR', 'SOLEUR'] };
 }
 function adjustedRisk(strategy, spreadPct = 0, profile = null) { const base = profile ? { timeoutMinutes: profile.name === 'micro' ? 30 : 90, takeProfitPct: profile.takeProfitPct, stopLossPct: profile.stopLossPct } : (STRATEGY_RISK[strategy] || STRATEGY_RISK.default); const estimatedRoundTripFeesPct = 0.26; return { ...base, estimatedRoundTripFeesPct, takeProfitPct: Math.max(base.takeProfitPct, spreadPct + estimatedRoundTripFeesPct + 0.05) }; }
 
