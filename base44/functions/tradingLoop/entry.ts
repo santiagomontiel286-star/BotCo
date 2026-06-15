@@ -265,8 +265,7 @@ function shouldCloseTrade(trade, ticker, forceClose, bot) {
   const amount = Number(trade.amount || 0);
   if (!entry || !amount) return { close: false, reason: 'Trade sin entrada o volumen válido' };
 const profile = capitalProfile(ticker.price > 0 ? 30 : 0);
-const risk = adjustedRisk(bot?.strategy || trade.strategy || 'default', ticker.spreadPct, profile);  const pnlPct = ((ticker.price - entry) / entry) * (trade.side === 'buy' ? 1 : -1) * 100;
-  const ageMs = Date.now() - new Date(trade.entry_date || trade.created_date).getTime();
+const risk = adjustedRisk(bot?.strategy || trade.strategy || 'default', ticker.spreadPct);
   if (pnlPct >= risk.takeProfitPct) return { close: true, reason: `TP ${risk.takeProfitPct.toFixed(2)}% alcanzado`, pnlPct };
   if (pnlPct <= -risk.stopLossPct) return { close: true, reason: `SL -${risk.stopLossPct.toFixed(2)}% alcanzado`, pnlPct };
   if (ageMs >= risk.timeoutMinutes * 60 * 1000) return { close: true, reason: `Timeout ${risk.timeoutMinutes} minutos`, pnlPct };
