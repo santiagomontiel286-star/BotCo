@@ -9,7 +9,7 @@ const MASTER_STRATEGY = {
   version: 'SentinelAI Pro v2',
   role: 'Sistema institucional de trading algorítmico crypto para Kraken Spot, sin leverage, sin margin y sin futures.',
   minScore: 75,
-  minRiskReward: 2,
+  minRiskReward: 1,
   preferredRiskReward: 3,
   weights: { trend: 25, momentum: 20, volume: 15, volatility: 15, macro: 15, sentiment: 10 },
   rules: [
