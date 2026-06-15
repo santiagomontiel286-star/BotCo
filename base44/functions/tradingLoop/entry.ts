@@ -394,7 +394,6 @@ async function riskCheck({ entities, bot, session, pair, balances, env, openTrad
   const liquidity = liquidityCheck(candles, ticker, minQuote);
   if (!liquidity.ok) return { ok: false, reason: liquidity.reason, balanceQuote, orderQuote, minQuote };
   const expected = adjustedRisk(bot.strategy || 'default', ticker.spreadPct, profile);
-  if (expected.takeProfitPct < expected.stopLossPct * MASTER_STRATEGY.minRiskReward) return { ok: false, reason: 'RR inferior al mínimo institucional 1:2', balanceQuote, orderQuote, minQuote };
   if (ticker.spreadPct + expected.estimatedRoundTripFeesPct >= expected.takeProfitPct) return { ok: false, reason: 'TP no cubre fees + spread', balanceQuote, orderQuote, minQuote };
   const recent = await entities.Trade.filter({ bot_name: bot.name, mode: 'live' }, '-created_date', 20);
   const today = new Date();
