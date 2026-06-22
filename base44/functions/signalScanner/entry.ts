@@ -93,7 +93,7 @@ function capitalProfile(capital) {
   if (capital >= 5000) return { name: 'alto', minScore: 80, pairs: ['XBTEUR', 'ETHEUR', 'SOLEUR'] };
   if (capital >= 500) return { name: 'medio', minScore: 75, pairs: PAIRS };
   if (capital >= 50) return { name: 'pequeño', minScore: 70, pairs: PAIRS };
-  return { name: 'micro', minScore: 65, pairs: ['ETHEUR', 'XRPEUR', 'ADAEUR', 'SOLEUR'] };
+  return { name: 'micro', minScore: 60, pairs: ['ETHEUR', 'XRPEUR', 'ADAEUR', 'SOLEUR'] };
 }
 
 function capitalPlan(pair, balances, openTrades, maxQuote, minReserved) {
@@ -184,9 +184,7 @@ Deno.serve(async (req) => {
 
     const entities = base44.asServiceRole.entities;
     const now = new Date();
-    const intervalMinutes = Math.max(1, Number(Deno.env.get('BOTCO_AUTOTRADE_INTERVAL_MINUTES') || '1'));
-    const expiresMs = Math.max(3 * 60 * 1000, intervalMinutes * 2 * 60 * 1000);
-    const expiresAt = new Date(now.getTime() + expiresMs).toISOString();
+    const expiresAt = new Date(now.getTime() + 3 * 60 * 1000).toISOString();
     const maxQuote = Math.min(Number(Deno.env.get('MAX_LIVE_ORDER_QUOTE') || '8'), 8);
     const minReserved = Math.max(Number(Deno.env.get('MIN_RESERVED_QUOTE') || '4'), 4);
     const liveAllowed = toBool(Deno.env.get('KRAKEN_LIVE_TRADING')) && toBool(Deno.env.get('BOTCO_LIVE_ENABLED'));

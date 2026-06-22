@@ -22,12 +22,12 @@ const MASTER_STRATEGY = {
 };
 
 const STRATEGY_RISK = {
-  micro_scalp: { timeoutMinutes: 45, takeProfitPct: 1.60, stopLossPct: 0.70 },
-  micro_scalp_test: { timeoutMinutes: 45, takeProfitPct: 1.60, stopLossPct: 0.70 },
-  ema_cross: { timeoutMinutes: 120, takeProfitPct: 2.00, stopLossPct: 0.90 },
-  mean_reversion: { timeoutMinutes: 90, takeProfitPct: 1.80, stopLossPct: 0.80 },
-  first_live_trade: { timeoutMinutes: 60, takeProfitPct: 1.60, stopLossPct: 0.70 },
-  default: { timeoutMinutes: 90, takeProfitPct: 1.80, stopLossPct: 0.80 }
+  micro_scalp: { timeoutMinutes: 45, takeProfitPct: 0.40, stopLossPct: 0.80 },
+  micro_scalp_test: { timeoutMinutes: 45, takeProfitPct: 0.40, stopLossPct: 0.80 },
+  ema_cross: { timeoutMinutes: 120, takeProfitPct: 0.40, stopLossPct: 0.80 },
+  mean_reversion: { timeoutMinutes: 90, takeProfitPct: 0.40, stopLossPct: 0.80 },
+  first_live_trade: { timeoutMinutes: 60, takeProfitPct: 0.40, stopLossPct: 0.80 },
+  default: { timeoutMinutes: 90, takeProfitPct: 0.40, stopLossPct: 0.80 }
 };
 
 let lastNonce = 0;
@@ -241,15 +241,21 @@ async function getOrderExecution(txid) {
   throw new Error(`Kraken aún no confirmó ejecución para ${txid}`);
 }
 
-async function closeTradeMarket(trade, currentPrice) {
+async function closeTradeMarket(trade, currentPrice, closeRatio = 1) {
   const pair = normalizePair(trade.pair);
   const asset = baseAsset(pair);
   const balances = await getBalances();
   const availableAsset = getAssetBalance(balances, asset);
-  const requested = Number(trade.amount || trade.executed_volume || 0) * 0.995;
-  const closeAmount = Math.min(requested, availableAsset * 0.995);
+  const totalAmount = Number(trade.amount || trade.executed_volume || 0);
+  const requestedPartial = totalAmount * closeRatio * 0.995;
+  const requestedFull = totalAmount * 0.995;
   const rules = await getAssetPairRules(pair);
-  const volume = roundDown(closeAmount, rules.lot_decimals);
+  let closeAmount = Math.min(requestedPartial, availableAsset * 0.995);
+  let volume = roundDown(closeAmount, rules.lot_decimals);
+  if (closeRatio < 1 && (!volume || (rules.ordermin && volume < rules.ordermin) || (rules.costmin && volume * currentPrice < rules.costmin))) {
+    closeAmount = Math.min(requestedFull, availableAsset * 0.995);
+    volume = roundDown(closeAmount, rules.lot_decimals);
+  }
   if (!volume || volume <= 0 || (rules.ordermin && volume < rules.ordermin)) throw new Error(`Volumen de cierre inferior al mínimo Kraken para ${displayPair(pair)}`);
   if (rules.costmin && volume * currentPrice < rules.costmin) throw new Error(`Coste de cierre inferior al mínimo Kraken para ${displayPair(pair)}`);
   const response = await placeMarketOrder(pair, trade.side === 'buy' ? 'sell' : 'buy', volume);
@@ -264,8 +270,13 @@ function shouldCloseTrade(trade, ticker, forceClose, bot) {
   const entry = Number(trade.entry_price || 0);
   const amount = Number(trade.amount || 0);
   if (!entry || !amount) return { close: false, reason: 'Trade sin entrada o volumen válido' };
-const profile = capitalProfile(ticker.price > 0 ? 30 : 0);
-const risk = adjustedRisk(bot?.strategy || trade.strategy || 'default', ticker.spreadPct, { takeProfitPct: 0.45, stopLossPct: 0.25, timeoutMinutes: 30 });
+  const risk = adjustedRisk(bot?.strategy || trade.strategy || 'default', ticker.spreadPct, { takeProfitPct: 0.40, stopLossPct: 0.80, timeoutMinutes: 30 });
+  const pnlPct = ((ticker.price - entry) / entry) * (trade.side === 'buy' ? 1 : -1) * 100;
+  const ageMs = Date.now() - new Date(trade.entry_date || trade.created_date).getTime();
+  const partialDone = String(trade.notes || '').includes('PARTIAL_TP_DONE');
+  const stopLossPrice = Number(trade.stop_loss || 0);
+  if (pnlPct >= 0.30 && !partialDone) return { close: true, partial: true, reason: 'Partial take profit 50% al +0.30% y trailing stop a breakeven', pnlPct };
+  if (stopLossPrice > 0 && ticker.price <= stopLossPrice) return { close: true, reason: stopLossPrice >= entry ? 'Trailing stop breakeven ejecutado' : `SL ${risk.stopLossPct.toFixed(2)}% alcanzado`, pnlPct };
   if (pnlPct >= risk.takeProfitPct) return { close: true, reason: `TP ${risk.takeProfitPct.toFixed(2)}% alcanzado`, pnlPct };
   if (pnlPct <= -risk.stopLossPct) return { close: true, reason: `SL -${risk.stopLossPct.toFixed(2)}% alcanzado`, pnlPct };
   if (ageMs >= risk.timeoutMinutes * 60 * 1000) return { close: true, reason: `Timeout ${risk.timeoutMinutes} minutos`, pnlPct };
@@ -289,7 +300,7 @@ async function getFreshSignals(entities) {
 }
 
 function rankSignals(signals) {
-  return signals.filter(signal => signal.side === 'buy' && Number(signal.score || 0) >= 65 && Number(signal.confidence || 0) >= 0.65).sort((a, b) => (Number(b.score || 0) - Number(a.score || 0)) || (Number(b.confidence || 0) - Number(a.confidence || 0)) || (new Date(b.created_date) - new Date(a.created_date)));
+  return signals.filter(signal => signal.side === 'buy' && Number(signal.score || 0) >= 60 && Number(signal.confidence || 0) >= 0.60).sort((a, b) => (Number(b.score || 0) - Number(a.score || 0)) || (Number(b.confidence || 0) - Number(a.confidence || 0)) || (new Date(b.created_date) - new Date(a.created_date)));
 }
 
 async function evaluateCandidate({ bot, pair, balances, openTrades, existingSignals, env }) {
@@ -321,7 +332,7 @@ async function evaluateCandidate({ bot, pair, balances, openTrades, existingSign
 
 async function runScanner(entities, liveSession, liveBots, balances, openTrades, env) {
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + Math.max(10 * 60 * 1000, env.intervalMinutes * 2 * 60 * 1000)).toISOString();
+  const expiresAt = new Date(now.getTime() + 3 * 60 * 1000).toISOString();
   const existingSignals = await getFreshSignals(entities);
   const jobs = [];
   for (const bot of liveBots) {
@@ -399,8 +410,13 @@ async function riskCheck({ entities, bot, session, pair, balances, env, openTrad
   today.setUTCHours(0, 0, 0, 0);
   const todayLoss = recent.filter(trade => new Date(trade.exit_date || trade.updated_date || trade.created_date).getTime() >= today.getTime()).reduce((sum, trade) => sum + Math.min(0, Number(trade.profit_loss || 0)), 0);
   if (Math.abs(todayLoss) >= Number(bot.daily_loss_limit || 3)) return { ok: false, reason: 'daily loss limit alcanzado', balanceQuote, orderQuote, minQuote };
-  const consecutiveLosses = recent.filter(trade => trade.status === 'closed').slice(0, 3).filter(trade => Number(trade.profit_loss || 0) < 0).length;
-  if (consecutiveLosses >= 3) return { ok: false, reason: '3 pérdidas consecutivas del bot', balanceQuote, orderQuote, minQuote };
+  const consecutiveLosses = recent.filter(trade => trade.status === 'closed').slice(0, 5).filter(trade => Number(trade.profit_loss || 0) < 0).length;
+  const consecutiveLossLimit = Math.max(1, Number(bot.consecutive_loss_pause || 5));
+  if (consecutiveLosses >= consecutiveLossLimit) {
+    const blockedAt = new Date(bot.cooldown_until || bot.last_run_at || bot.updated_date || bot.created_date || 0).getTime();
+    if (blockedAt && Date.now() - blockedAt > 30 * 60 * 1000) await safeBotUpdate(entities, bot.id, { last_signal: '', last_error: '', cooldown_until: null });
+    else return { ok: false, reason: `${consecutiveLossLimit} pérdidas consecutivas del bot`, balanceQuote, orderQuote, minQuote };
+  }
   return { ok: true, balanceQuote, orderQuote, minQuote, volume, liquidity, profile };
 }
 

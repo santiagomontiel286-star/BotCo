@@ -7,12 +7,12 @@ const QUOTE_KEYS = { USD: ['ZUSD', 'USD'], EUR: ['ZEUR', 'EUR'] };
 const ASSET_KEYS = { XBT: ['XXBT', 'XBT', 'BTC'], ETH: ['XETH', 'ETH'], SOL: ['SOL'], XRP: ['XXRP', 'XRP'], ADA: ['ADA'], DOT: ['DOT'], LINK: ['LINK'], ATOM: ['ATOM'] };
 const DISPLAY_PAIRS = { XBTUSD: 'BTC/USD', XBTEUR: 'BTC/EUR', ETHUSD: 'ETH/USD', ETHEUR: 'ETH/EUR', SOLUSD: 'SOL/USD', SOLEUR: 'SOL/EUR', XRPUSD: 'XRP/USD', XRPEUR: 'XRP/EUR', ADAUSD: 'ADA/USD', ADAEUR: 'ADA/EUR', DOTUSD: 'DOT/USD', DOTEUR: 'DOT/EUR', LINKUSD: 'LINK/USD', LINKEUR: 'LINK/EUR', ATOMUSD: 'ATOM/USD', ATOMEUR: 'ATOM/EUR' };
 const STRATEGY_RISK = {
-  micro_scalp: { timeoutMinutes: 45, takeProfitPct: 1.00, stopLossPct: 0.70 },
-  micro_scalp_test: { timeoutMinutes: 45, takeProfitPct: 1.00, stopLossPct: 0.70 },
-  ema_cross: { timeoutMinutes: 90, takeProfitPct: 1.20, stopLossPct: 0.90 },
-  mean_reversion: { timeoutMinutes: 60, takeProfitPct: 1.00, stopLossPct: 0.80 },
-  first_live_trade: { timeoutMinutes: 45, takeProfitPct: 1.00, stopLossPct: 0.70 },
-  default: { timeoutMinutes: 60, takeProfitPct: 1.00, stopLossPct: 0.80 }
+  micro_scalp: { timeoutMinutes: 45, takeProfitPct: 0.40, stopLossPct: 0.80 },
+  micro_scalp_test: { timeoutMinutes: 45, takeProfitPct: 0.40, stopLossPct: 0.80 },
+  ema_cross: { timeoutMinutes: 90, takeProfitPct: 0.40, stopLossPct: 0.80 },
+  mean_reversion: { timeoutMinutes: 60, takeProfitPct: 0.40, stopLossPct: 0.80 },
+  first_live_trade: { timeoutMinutes: 45, takeProfitPct: 0.40, stopLossPct: 0.80 },
+  default: { timeoutMinutes: 60, takeProfitPct: 0.40, stopLossPct: 0.80 }
 };
 let lastNonce = 0;
 const publicCache = new Map();
@@ -31,8 +31,8 @@ function pairForAsset(asset, quote) { return asset === 'BTC' ? `XBT${quote}` : `
 function strategyRisk(strategy) { return STRATEGY_RISK[strategy] || STRATEGY_RISK.default; }
 function adjustedRisk(strategy, spreadPct = 0) {
   const base = strategyRisk(strategy);
-  const estimatedRoundTripFeesPct = 0.80;
-  const takeProfitPct = Math.max(base.takeProfitPct, spreadPct + estimatedRoundTripFeesPct + 0.20);
+  const estimatedRoundTripFeesPct = 0.26;
+  const takeProfitPct = Math.max(base.takeProfitPct, spreadPct + estimatedRoundTripFeesPct + 0.05);
   return { ...base, takeProfitPct, estimatedRoundTripFeesPct };
 }
 
@@ -149,15 +149,21 @@ async function getOrderExecution(txid) {
   throw new Error(`Kraken aún no confirmó ejecución para ${txid}`);
 }
 
-async function closeTradeMarket(trade, currentPrice) {
+async function closeTradeMarket(trade, currentPrice, closeRatio = 1) {
   const pair = normalizePair(trade.pair);
   const asset = baseAsset(pair);
   const balances = await getBalances();
   const availableAsset = getAssetBalance(balances, asset);
-  const requested = Number(trade.amount || trade.executed_volume || 0) * 0.995;
-  const closeAmount = Math.min(requested, availableAsset * 0.995);
+  const totalAmount = Number(trade.amount || trade.executed_volume || 0);
+  const requestedPartial = totalAmount * closeRatio * 0.995;
+  const requestedFull = totalAmount * 0.995;
   const rules = await getAssetPairRules(pair);
-  const volume = roundDown(closeAmount, rules.lot_decimals);
+  let closeAmount = Math.min(requestedPartial, availableAsset * 0.995);
+  let volume = roundDown(closeAmount, rules.lot_decimals);
+  if (closeRatio < 1 && (!volume || (rules.ordermin && volume < rules.ordermin) || (rules.costmin && volume * currentPrice < rules.costmin))) {
+    closeAmount = Math.min(requestedFull, availableAsset * 0.995);
+    volume = roundDown(closeAmount, rules.lot_decimals);
+  }
   if (!volume || volume <= 0 || (rules.ordermin && volume < rules.ordermin)) throw new Error(`Volumen de cierre inferior al mínimo Kraken para ${displayPair(pair)}`);
   if (rules.costmin && volume * currentPrice < rules.costmin) throw new Error(`Coste de cierre inferior al mínimo Kraken para ${displayPair(pair)}`);
   const response = await placeMarketOrder(pair, trade.side === 'buy' ? 'sell' : 'buy', volume);
@@ -208,8 +214,12 @@ function shouldCloseTrade(trade, ticker, forceClose, bot) {
   const risk = adjustedRisk(strategy, ticker.spreadPct);
   const pnlPct = ((ticker.price - entry) / entry) * (trade.side === 'buy' ? 1 : -1) * 100;
   const ageMs = Date.now() - new Date(trade.entry_date || trade.created_date).getTime();
-  if (pnlPct >= risk.takeProfitPct) return { close: true, reason: `TP ${risk.takeProfitPct}% alcanzado`, pnlPct };
-  if (pnlPct <= -risk.stopLossPct) return { close: true, reason: `SL -${risk.stopLossPct}% alcanzado`, pnlPct };
+  const partialDone = String(trade.notes || '').includes('PARTIAL_TP_DONE');
+  const stopLossPrice = Number(trade.stop_loss || 0);
+  if (pnlPct >= 0.30 && !partialDone) return { close: true, partial: true, reason: 'Partial take profit 50% al +0.30% y trailing stop a breakeven', pnlPct };
+  if (stopLossPrice > 0 && ticker.price <= stopLossPrice) return { close: true, reason: stopLossPrice >= entry ? 'Trailing stop breakeven ejecutado' : `SL ${risk.stopLossPct}% alcanzado`, pnlPct };
+  if (pnlPct >= risk.takeProfitPct) return { close: true, reason: `TP ${risk.takeProfitPct.toFixed(2)}% alcanzado`, pnlPct };
+  if (pnlPct <= -risk.stopLossPct) return { close: true, reason: `SL -${risk.stopLossPct.toFixed(2)}% alcanzado`, pnlPct };
   if (ageMs >= risk.timeoutMinutes * 60 * 1000) return { close: true, reason: `Timeout ${risk.timeoutMinutes} minutos`, pnlPct };
   return { close: false, reason: `Monitoreando hasta ${risk.timeoutMinutes}m`, pnlPct };
 }
@@ -232,7 +242,7 @@ async function getFreshSignals(entities) {
 }
 
 function rankSignals(signals) {
-  return signals.filter(signal => signal.side === 'buy' && Number(signal.score || 0) >= 55 && Number(signal.confidence || 0) >= 0.55).sort((a, b) => (Number(b.score || 0) - Number(a.score || 0)) || (Number(b.confidence || 0) - Number(a.confidence || 0)) || (new Date(b.created_date) - new Date(a.created_date)));
+  return signals.filter(signal => signal.side === 'buy' && Number(signal.score || 0) >= 60 && Number(signal.confidence || 0) >= 0.55).sort((a, b) => (Number(b.score || 0) - Number(a.score || 0)) || (Number(b.confidence || 0) - Number(a.confidence || 0)) || (new Date(b.created_date) - new Date(a.created_date)));
 }
 
 async function riskCheck({ entities, bot, session, pair, balances, env, openTrades, ticker, rules }) {
@@ -273,8 +283,13 @@ async function riskCheck({ entities, bot, session, pair, balances, env, openTrad
   const todayLoss = recent.filter(trade => new Date(trade.exit_date || trade.updated_date || trade.created_date).getTime() >= today.getTime()).reduce((sum, trade) => sum + Math.min(0, Number(trade.profit_loss || 0)), 0);
   const dailyLossLimit = Number(bot.daily_loss_limit || 3);
   if (Math.abs(todayLoss) >= dailyLossLimit) return { ok: false, reason: 'daily loss limit alcanzado', balanceQuote, orderQuote, minQuote };
-  const consecutiveLosses = recent.filter(trade => trade.status === 'closed').slice(0, 3).filter(trade => Number(trade.profit_loss || 0) < 0).length;
-  if (consecutiveLosses >= 3) return { ok: false, reason: '3 pérdidas consecutivas del bot', balanceQuote, orderQuote, minQuote };
+  const consecutiveLosses = recent.filter(trade => trade.status === 'closed').slice(0, 5).filter(trade => Number(trade.profit_loss || 0) < 0).length;
+  const consecutiveLossLimit = Math.max(1, Number(bot.consecutive_loss_pause || 5));
+  if (consecutiveLosses >= consecutiveLossLimit) {
+    const blockedAt = new Date(bot.cooldown_until || bot.last_run_at || bot.updated_date || bot.created_date || 0).getTime();
+    if (blockedAt && Date.now() - blockedAt > 30 * 60 * 1000) await safeBotUpdate(entities, bot.id, { last_signal: '', last_error: '', cooldown_until: null });
+    else return { ok: false, reason: `${consecutiveLossLimit} pérdidas consecutivas del bot`, balanceQuote, orderQuote, minQuote };
+  }
   return { ok: true, balanceQuote, orderQuote, minQuote, volume, liquidity };
 }
 
@@ -319,20 +334,34 @@ Deno.serve(async (req) => {
         const contrarySignal = freshSignals.find(signal => signal.side === 'sell' && signal.bot_id === bot?.id && normalizePair(signal.pair) === pair);
         if (!decision.close && contrarySignal) decision = { close: true, reason: `Señal contraria del mismo bot: ${contrarySignal.reason}`, signalId: contrarySignal.id };
         if (!decision.close) { results.push({ action: 'monitoring', tradeId: trade.id, bot: trade.bot_name, pair: displayPair(pair), price: ticker.price, pnlPercent: decision.pnlPct, reason: decision.reason }); continue; }
-        const closed = await closeTradeMarket(trade, ticker.price);
+        const closed = await closeTradeMarket(trade, ticker.price, decision.partial ? 0.5 : 1);
         const closeOrderId = closed.execution.txid;
         const entryCost = Number(trade.cost || (Number(trade.entry_price || 0) * Number(trade.amount || 0)));
         const entryFee = Number(trade.fee || trade.fees || 0);
+        const currentAmount = Number(trade.amount || closed.execution.executed_volume || 0);
         const closeCost = Number(closed.execution.cost || 0);
         const closeFee = Number(closed.execution.fee || 0);
-        const pnl = trade.side === 'buy' ? closeCost - entryCost - entryFee - closeFee : entryCost - closeCost - entryFee - closeFee;
-        const pnlPct = entryCost ? (pnl / entryCost) * 100 : 0;
-        await entities.Trade.update(trade.id, { status: 'closed', exit_price: closed.execution.executed_price, close_executed_price: closed.execution.executed_price, close_executed_volume: closed.execution.executed_volume, close_fee: closeFee, close_cost: closeCost, close_txid: closeOrderId, exit_date: nowIso, profit_loss: Number(pnl.toFixed(8)), profit_loss_percent: Number(pnlPct.toFixed(4)), close_order_id: closeOrderId, closed_by_tick_id: id, raw_response: JSON.stringify({ open: trade.raw_response || '', close: closed.response, closeExecution: closed.execution.raw_order }), last_error: '', notes: `LIVE cerrado: ${decision.reason}` });
-        await createAlert(entities, 'Orden LIVE cerrada', `${trade.bot_name} cerró ${displayPair(pair)} · PnL ${pnl.toFixed(6)}`, pnl >= 0 ? 'success' : 'warning');
+        const closeFraction = currentAmount ? Math.min(1, Number(closed.execution.executed_volume || 0) / currentAmount) : 1;
+        const entryCostClosed = entryCost * closeFraction;
+        const entryFeeClosed = entryFee * closeFraction;
+        const pnl = trade.side === 'buy' ? closeCost - entryCostClosed - entryFeeClosed - closeFee : entryCostClosed - closeCost - entryFeeClosed - closeFee;
+        const pnlPct = entryCostClosed ? (pnl / entryCostClosed) * 100 : 0;
+        const accumulatedPnl = Number(trade.profit_loss || 0) + pnl;
+        const remainingAmount = Math.max(0, currentAmount - Number(closed.execution.executed_volume || 0));
+        if (decision.partial && remainingAmount > 0 && closeFraction < 0.95) {
+          const breakevenPrice = entryCost ? Number((Number(trade.entry_price || 0) * (1 + ((entryFee / entryCost) * 2))).toFixed(8)) : Number(trade.entry_price || 0);
+          await entities.Trade.update(trade.id, { amount: remainingAmount, executed_volume: remainingAmount, cost: Number((entryCost - entryCostClosed).toFixed(8)), fee: Number((entryFee - entryFeeClosed).toFixed(8)), fees: Number((entryFee - entryFeeClosed).toFixed(8)), stop_loss: breakevenPrice, profit_loss: Number(accumulatedPnl.toFixed(8)), close_executed_price: closed.execution.executed_price, close_executed_volume: closed.execution.executed_volume, close_fee: closeFee, close_cost: closeCost, close_txid: closeOrderId, close_order_id: closeOrderId, raw_response: JSON.stringify({ open: trade.raw_response || '', partialClose: closed.response, partialExecution: closed.execution.raw_order }), last_error: '', notes: `${trade.notes || ''} · PARTIAL_TP_DONE · 50% cerrado al +0.30%; trailing stop a breakeven ${breakevenPrice}` });
+          await createAlert(entities, 'Partial take profit LIVE', `${trade.bot_name} aseguró 50% de ${displayPair(pair)} · PnL ${pnl.toFixed(6)}`, 'success');
+          signalStats.tradesClosed += 0;
+          results.push({ action: 'partial_closed', tradeId: trade.id, bot: trade.bot_name, pair: displayPair(pair), exitPrice: closed.execution.executed_price, executedVolume: closed.execution.executed_volume, remainingAmount, breakevenStop: breakevenPrice, pnl, pnlPercent: pnlPct, closeOrderId });
+          continue;
+        }
+        await entities.Trade.update(trade.id, { status: 'closed', exit_price: closed.execution.executed_price, close_executed_price: closed.execution.executed_price, close_executed_volume: closed.execution.executed_volume, close_fee: closeFee, close_cost: closeCost, close_txid: closeOrderId, exit_date: nowIso, profit_loss: Number(accumulatedPnl.toFixed(8)), profit_loss_percent: Number(pnlPct.toFixed(4)), close_order_id: closeOrderId, closed_by_tick_id: id, raw_response: JSON.stringify({ open: trade.raw_response || '', close: closed.response, closeExecution: closed.execution.raw_order }), last_error: '', notes: `LIVE cerrado: ${decision.reason}` });
+        await createAlert(entities, 'Orden LIVE cerrada', `${trade.bot_name} cerró ${displayPair(pair)} · PnL ${pnl.toFixed(6)}`, accumulatedPnl >= 0 ? 'success' : 'warning');
         if (decision.signalId) await markSignal(entities, { id: decision.signalId }, 'executed', 'executed: cierre por señal contraria');
         if (bot?.id) await safeBotUpdate(entities, bot.id, { last_run_at: nowIso, last_signal: `closed: ${decision.reason}`, last_error: '', cooldown_until: new Date(Date.now() + 60_000).toISOString() });
         signalStats.tradesClosed += 1;
-        results.push({ action: 'closed', tradeId: trade.id, bot: trade.bot_name, pair: displayPair(pair), exitPrice: closed.execution.executed_price, executedVolume: closed.execution.executed_volume, fee: closeFee, cost: closeCost, pnl, pnlPercent: pnlPct, closeOrderId, rawResponse: closed.response });
+        results.push({ action: 'closed', tradeId: trade.id, bot: trade.bot_name, pair: displayPair(pair), exitPrice: closed.execution.executed_price, executedVolume: closed.execution.executed_volume, fee: closeFee, cost: closeCost, pnl: accumulatedPnl, pnlPercent: pnlPct, closeOrderId, rawResponse: closed.response });
       } catch (error) {
         await entities.Trade.update(trade.id, { status: 'open', last_error: error.message });
         if (bot?.id) await safeBotUpdate(entities, bot.id, { last_run_at: nowIso, last_error: error.message });
