@@ -59,13 +59,18 @@ function adjustedRisk(strategy, spreadPct = 0, profile = null) { const base = pr
 function envConfig() {
   const required = ['KRAKEN_API_KEY', 'KRAKEN_API_SECRET', 'KRAKEN_LIVE_TRADING', 'BOTCO_LIVE_ENABLED'];
   const missing = required.filter(name => !Deno.env.get(name));
-  const maxQuote = Math.min(Number(Deno.env.get('MAX_LIVE_ORDER_QUOTE') || '8'), 8);
-  const maxOpenTrades = Math.min(Number(Deno.env.get('MAX_OPEN_LIVE_TRADES') || '5'), 5);
-  const minReservedQuote = Math.max(Number(Deno.env.get('MIN_RESERVED_QUOTE') || '4'), 4);
+  const maxQuote = 25;
+  const maxOpenTrades = 1;
+  const minReservedQuote = 4;
   const intervalMinutes = Math.max(5, Number(Deno.env.get('BOTCO_AUTOTRADE_INTERVAL_MINUTES') || '5'));
   const krakenLiveTrading = toBool(Deno.env.get('KRAKEN_LIVE_TRADING'));
   const botcoLiveEnabled = toBool(Deno.env.get('BOTCO_LIVE_ENABLED'));
   return { missing, maxQuote, maxOpenTrades, minReservedQuote, intervalMinutes, krakenLiveTrading, botcoLiveEnabled, ok: missing.length === 0 && krakenLiveTrading && botcoLiveEnabled && maxQuote > 0 };
+}
+
+function applyDynamicCapitalEnv(env, balances) {
+  const balanceEUR = getBalanceAmount(balances || {}, 'EUR');
+  return { ...env, maxQuote: balanceEUR > 0 ? Math.floor(balanceEUR * 0.85) : 25, maxOpenTrades: 1, minReservedQuote: 4 };
 }
 
 function assertLiveEnv() {
@@ -433,13 +438,14 @@ Deno.serve(async (req) => {
     const user = await base44.auth.me().catch(() => null);
     if (!autoMode && !user) return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const env = envConfig();
+    let env = envConfig();
+    try { env = applyDynamicCapitalEnv(env, await getBalances()); } catch { env = applyDynamicCapitalEnv(env, null); }
     const sessions = await entities.BotSession.filter({ active: true }, '-created_date', 5);
     const liveSession = sessions.find(session => session.mode === 'live');
     const bots = await entities.Bot.list();
     const liveBots = bots.filter(bot => bot.status === 'active' && bot.trading_mode === 'live' && bot.live_enabled === true && (bot.exchange || 'kraken') === 'kraken');
 
-    if (validateOnly) return Response.json({ ok: env.ok, ...env, masterStrategy: MASTER_STRATEGY.version, dynamicProfiles: ['micro:65', 'pequeño:70', 'medio:75', 'alto:80', 'institucional:85'], liveSession: !!liveSession, liveBots: liveBots.length, supportedPairs: SUPPORTED_PAIRS, message: env.ok ? 'tradingLoop LIVE con SentinelAI Pro activo' : 'Entorno LIVE incompleto o bloqueado' });
+    if (validateOnly) return Response.json({ ok: env.ok, ...env, masterStrategy: MASTER_STRATEGY.version, dynamicProfiles: ['micro:65', 'pequeño:70', 'medio:75', 'alto:80', 'institucional:85'], liveSession: !!liveSession, liveBots: liveBots.length, supportedPairs: SUPPORTED_PAIRS, message: env.ok ? 'tradingLoop LIVE con capital concentrado dinámico activo' : 'Entorno LIVE incompleto o bloqueado' });
     assertLiveEnv();
     if (!liveSession) return Response.json({ ok: true, skipped: true, reason: 'No hay BotSession LIVE activa', tickId: id });
     if (!runOnce && !autoMode && !forceClose) return Response.json({ error: 'Payload inválido: usa runOnce, autoMode, forceClose o validateOnly' }, { status: 400 });
@@ -448,6 +454,7 @@ Deno.serve(async (req) => {
     const nowIso = new Date().toISOString();
     const results = [];
     let balances = await getBalances();
+    env = applyDynamicCapitalEnv(env, balances);
     let openTrades = await entities.Trade.filter({ mode: 'live', status: 'open' }, '-created_date', 50);
     const scanner = forceClose ? { scannerTick: nowIso, scannedPairs: SUPPORTED_PAIRS, scannedBots: liveBots.length, evaluations: 0, signalsCreated: 0, signalsRejected: 0, reasons: [] } : await runScanner(entities, liveSession, liveBots, balances, openTrades, env);
     let freshSignals = await getFreshSignals(entities);

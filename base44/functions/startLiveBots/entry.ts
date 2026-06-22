@@ -5,15 +5,48 @@ function toBool(value) {
 }
 
 function validateEnv() {
-  const required = ['KRAKEN_API_KEY', 'KRAKEN_API_SECRET', 'KRAKEN_LIVE_TRADING', 'BOTCO_LIVE_ENABLED', 'MAX_LIVE_ORDER_QUOTE', 'BOTCO_AUTOTRADE_INTERVAL_MINUTES'];
+  const required = ['KRAKEN_API_KEY', 'KRAKEN_API_SECRET', 'KRAKEN_LIVE_TRADING', 'BOTCO_LIVE_ENABLED', 'BOTCO_AUTOTRADE_INTERVAL_MINUTES'];
   const missing = required.filter(name => !Deno.env.get(name));
-  const configuredMax = Number(Deno.env.get('MAX_LIVE_ORDER_QUOTE') || '8');
-  const maxQuote = Math.min(configuredMax || 8, 8);
+  const maxQuote = 25;
   if (missing.length) throw new Error(`Faltan variables LIVE: ${missing.join(', ')}`);
   if (!toBool(Deno.env.get('KRAKEN_LIVE_TRADING'))) throw new Error('KRAKEN_LIVE_TRADING debe ser true');
   if (!toBool(Deno.env.get('BOTCO_LIVE_ENABLED'))) throw new Error('BOTCO_LIVE_ENABLED debe ser true');
-  if (!maxQuote || maxQuote <= 0) throw new Error('MAX_LIVE_ORDER_QUOTE debe ser mayor que 0');
-  return { maxQuote, maxOpenTrades: Math.min(Number(Deno.env.get('MAX_OPEN_LIVE_TRADES') || '2'), 2), minReservedQuote: Math.max(Number(Deno.env.get('MIN_RESERVED_QUOTE') || '4'), 4), intervalMinutes: Math.max(1, Number(Deno.env.get('BOTCO_AUTOTRADE_INTERVAL_MINUTES') || '1')) };
+  return { maxQuote, maxOpenTrades: 1, minReservedQuote: 4, intervalMinutes: Math.max(1, Number(Deno.env.get('BOTCO_AUTOTRADE_INTERVAL_MINUTES') || '1')) };
+}
+
+let lastNonce = 0;
+function nextNonce() { const now = Date.now() * 1000; lastNonce = Math.max(now, lastNonce + 1); return String(lastNonce); }
+function getBalanceAmount(balances, currency) { return (currency === 'EUR' ? ['ZEUR', 'EUR'] : [currency]).reduce((sum, key) => sum + Number(balances[key] || 0), 0); }
+
+async function signKraken(path, postData, secret) {
+  const nonce = new URLSearchParams(postData).get('nonce') || '';
+  const secretBytes = Uint8Array.from(atob(secret), c => c.charCodeAt(0));
+  const sha256 = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(nonce + postData));
+  const pathBytes = new TextEncoder().encode(path);
+  const message = new Uint8Array(pathBytes.length + sha256.byteLength);
+  message.set(pathBytes, 0);
+  message.set(new Uint8Array(sha256), pathBytes.length);
+  const key = await crypto.subtle.importKey('raw', secretBytes, { name: 'HMAC', hash: 'SHA-512' }, false, ['sign']);
+  const signature = await crypto.subtle.sign('HMAC', key, message);
+  return btoa(String.fromCharCode(...new Uint8Array(signature)));
+}
+
+async function getBalances() {
+  const apiKey = Deno.env.get('KRAKEN_API_KEY');
+  const apiSecret = Deno.env.get('KRAKEN_API_SECRET');
+  if (!apiKey || !apiSecret) throw new Error('Faltan KRAKEN_API_KEY o KRAKEN_API_SECRET');
+  const path = '/0/private/Balance';
+  const body = new URLSearchParams({ nonce: nextNonce() });
+  const postData = body.toString();
+  const response = await fetch(`https://api.kraken.com${path}`, { method: 'POST', headers: { 'API-Key': apiKey, 'API-Sign': await signKraken(path, postData, apiSecret), 'Content-Type': 'application/x-www-form-urlencoded' }, body: postData });
+  const json = await response.json();
+  if (json.error?.length) throw new Error(json.error.join(', '));
+  return json.result;
+}
+
+function applyDynamicCapitalEnv(env, balances) {
+  const balanceEUR = getBalanceAmount(balances || {}, 'EUR');
+  return { ...env, maxQuote: balanceEUR > 0 ? Math.floor(balanceEUR * 0.85) : 25, maxOpenTrades: 1, minReservedQuote: 4 };
 }
 
 Deno.serve(async (req) => {
@@ -23,7 +56,8 @@ Deno.serve(async (req) => {
     if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
     const payload = await req.json().catch(() => ({}));
-    const env = validateEnv();
+    let env = validateEnv();
+    try { env = applyDynamicCapitalEnv(env, await getBalances()); } catch { env = applyDynamicCapitalEnv(env, null); }
     const entities = base44.asServiceRole.entities;
     const allBots = await entities.Bot.list();
     const selectedIds = Array.isArray(payload.botIds) ? payload.botIds : [];
@@ -49,7 +83,7 @@ Deno.serve(async (req) => {
     const activeSessions = await entities.BotSession.filter({ active: true });
     for (const session of activeSessions) await entities.BotSession.update(session.id, { active: false, stopped_at: now });
 
-    const assignedCapital = Number(payload.assignedCapital || env.maxQuote * bots.length);
+    const assignedCapital = Number(payload.assignedCapital || env.maxQuote);
     const session = await entities.BotSession.create({
       active: true,
       mode: 'live',
