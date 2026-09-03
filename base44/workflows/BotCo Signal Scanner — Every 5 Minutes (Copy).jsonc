@@ -1,0 +1,46 @@
+{
+  "name": "BotCo Signal Scanner \u2014 Every 5 Minutes (Copy)",
+  "description": "Escanea Kraken y crea se\u00f1ales independientes en Signal Bus para cada bot LIVE activo.",
+  "trigger": {
+    "condition": null,
+    "config": {
+      "trigger_type": "scheduled",
+      "events": [],
+      "schedule_mode": "interval",
+      "cron_expression": null,
+      "one_time_date": null,
+      "timezone": "UTC",
+      "interval_value": 5,
+      "interval_unit": "minutes",
+      "interval_anchor": "2026-06-15T21:56:30.478000",
+      "ends_type": "never",
+      "ends_on_date": null,
+      "ends_after_count": null
+    }
+  },
+  "definition": {
+    "document": {
+      "dsl": "1.0.0",
+      "name": "botco_signal_scanner_every_5_minutes_copy",
+      "version": "1.0",
+      "namespace": "base44"
+    },
+    "do": [
+      {
+        "run_function": {
+          "call": "invoke_backend_function",
+          "with": {
+            "function_name": "signalScanner",
+            "args": {
+              "autoMode": true
+            }
+          },
+          "then": "end"
+        }
+      }
+    ]
+  },
+  "x-base44-migrated-from-automation": {
+    "legacy_payload_function": "signalScanner"
+  }
+}
