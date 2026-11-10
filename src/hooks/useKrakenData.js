@@ -13,14 +13,6 @@ function notify() {
   subscribers.forEach(listener => listener({ data: sharedData, error: sharedError, loading: sharedLoading }));
 }
 
-function getSessionKeys() {
-  try {
-    const saved = JSON.parse(sessionStorage.getItem('botco_api_keys') || 'null');
-    if (saved?.krakenKey && saved?.krakenSecret) return { apiKey: saved.krakenKey, apiSecret: saved.krakenSecret };
-  } catch {}
-  return {};
-}
-
 async function fetchSharedKraken(force = false) {
   if (!force && sharedData && Date.now() - sharedFetchedAt < CACHE_TTL_MS) return sharedData;
   if (sharedPromise) return sharedPromise;
@@ -29,7 +21,7 @@ async function fetchSharedKraken(force = false) {
   sharedError = null;
   notify();
 
-  sharedPromise = base44.functions.invoke('krakenAccount', getSessionKeys())
+  sharedPromise = base44.functions.invoke('krakenAccount', {})
     .then(res => {
       if (res.data?.portfolio) {
         sharedData = res.data;

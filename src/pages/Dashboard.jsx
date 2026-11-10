@@ -10,7 +10,6 @@ import { cn } from "@/lib/utils";
 export default function Dashboard() {
   const { data: bots = [] } = useQuery({ queryKey: ["bots"], queryFn: () => base44.entities.Bot.list() });
   const { data: sessions = [] } = useQuery({ queryKey: ["activeBotSession"], queryFn: () => base44.entities.BotSession.filter({ active: true }), refetchInterval: 30000 });
-  const { data: liveEnv } = useQuery({ queryKey: ["dashboardLiveEnv"], queryFn: async () => (await base44.functions.invoke("tradingTick", { validateOnly: true })).data, refetchInterval: 60000 });
   const { portfolio, totalUSD, openOrders, loading: loadingKraken, error: krakenError, refresh: fetchKrakenBalance, fetchedAt } = useKrakenData({ intervalMs: 60000 });
   const activeMode = sessions[0]?.mode === "demo" ? "demo" : "live";
   const isDemo = activeMode === "demo";
@@ -19,8 +18,13 @@ export default function Dashboard() {
   const activeBots = bots.filter(bot => bot.status === "active").length;
   const activeSession = sessions[0];
   const lastTickAt = activeSession?.last_tick_at;
-  const intervalMinutes = Number(liveEnv?.intervalMinutes || 5);
-  const cronStale = !isDemo && activeSession?.mode === "live" && (!lastTickAt || Date.now() - new Date(lastTickAt).getTime() > intervalMinutes * 2 * 60 * 1000);
+  const intervalMinutes = 5;
+  const cronMarginMinutes = 3;
+  const lastCycleStatus = activeSession?.last_cycle_status || "";
+  const cronStale = !isDemo && activeSession?.mode === "live" && (!lastTickAt || Date.now() - new Date(lastTickAt).getTime() > (intervalMinutes + cronMarginMinutes) * 60 * 1000);
+  const cycleFailed = !isDemo && lastCycleStatus === "failed";
+  const cycleCut = !isDemo && lastCycleStatus === "running" && cronStale;
+  const cronLabel = cycleFailed ? "Ciclo fallido" : cycleCut ? "Ciclo cortado" : cronStale ? "Atrasado" : "Activo";
   const visibleOpenOrders = isDemo ? [] : openOrders;
   const closedTrades = appTrades.filter(trade => trade.status === "closed");
   const netPnl = closedTrades.reduce((sum, trade) => sum + (trade.profit_loss || 0), 0);
@@ -41,7 +45,7 @@ export default function Dashboard() {
         <button onClick={fetchKrakenBalance} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"><RefreshCw className={cn("w-3.5 h-3.5", loadingKraken && "animate-spin")} />Actualizar Kraken</button>
       </div>
 
-      {cronStale && <div className="bg-chart-3/10 border border-chart-3/25 rounded-xl p-4"><p className="text-sm font-semibold text-chart-3">Advertencia: el ciclo automático LIVE parece atrasado.</p><p className="text-xs text-muted-foreground mt-1">Último tick: {lastTickAt ? new Date(lastTickAt).toLocaleString("es-ES") : "sin ejecución registrada"}. Revisa la automatización de tradingTick.</p></div>}
+      {(cronStale || cycleFailed) && <div className="bg-chart-3/10 border border-chart-3/25 rounded-xl p-4"><p className="text-sm font-semibold text-chart-3">Advertencia: el ciclo automático LIVE {cycleFailed ? "falló" : cycleCut ? "se cortó sin completar" : "parece atrasado"}.</p><p className="text-xs text-muted-foreground mt-1">Último ciclo completado: {lastTickAt ? new Date(lastTickAt).toLocaleString("es-ES") : "sin ejecución registrada"} · intervalo {intervalMinutes} min + margen {cronMarginMinutes} min. Revisa la automatización de tradingLoop.</p>{activeSession?.last_cycle_error && <p className="text-xs text-destructive mt-1 font-mono break-all">{activeSession.last_cycle_error}</p>}</div>}
 
       {!isDemo && <div className="bg-primary/5 border border-primary/20 rounded-xl p-4">
         <div className="flex items-center justify-between mb-3">
@@ -65,7 +69,7 @@ export default function Dashboard() {
         <div className="bg-card rounded-xl border border-border p-4"><span className="text-xs text-muted-foreground uppercase tracking-wider">Bots Activos</span><p className="text-xl font-mono font-bold text-primary mt-1">{activeBots}<span className="text-muted-foreground text-sm">/{bots.length}</span></p></div>
         <div className="bg-card rounded-xl border border-border p-4"><span className="text-xs text-muted-foreground uppercase tracking-wider">Trades Abiertos</span><p className="text-xl font-mono font-bold text-foreground mt-1">{appTrades.filter(trade => trade.status === "open").length}</p></div>
         <div className="bg-card rounded-xl border border-border p-4"><span className="text-xs text-muted-foreground uppercase tracking-wider">Órdenes Kraken</span><p className="text-xl font-mono font-bold text-foreground mt-1">{visibleOpenOrders.length}</p></div>
-        <div className="bg-card rounded-xl border border-border p-4"><span className="text-xs text-muted-foreground uppercase tracking-wider">Cron LIVE</span><div className="flex items-center gap-2 mt-1"><div className={cn("w-2 h-2 rounded-full", cronStale ? "bg-chart-3" : "bg-primary animate-pulse")} /><span className={cn("text-sm font-medium", cronStale ? "text-chart-3" : "text-primary")}>{cronStale ? "Atrasado" : "Activo"}</span></div><p className="text-[10px] text-muted-foreground mt-1">{lastTickAt ? new Date(lastTickAt).toLocaleTimeString("es-ES") : "—"}</p></div>
+        <div className="bg-card rounded-xl border border-border p-4"><span className="text-xs text-muted-foreground uppercase tracking-wider">Cron LIVE</span><div className="flex items-center gap-2 mt-1"><div className={cn("w-2 h-2 rounded-full", (cronStale || cycleFailed) ? "bg-chart-3" : "bg-primary animate-pulse")} /><span className={cn("text-sm font-medium", (cronStale || cycleFailed) ? "text-chart-3" : "text-primary")}>{cronLabel}</span></div><p className="text-[10px] text-muted-foreground mt-1">{lastTickAt ? new Date(lastTickAt).toLocaleTimeString("es-ES") : "—"}</p></div>
       </div>
 
       <div className="grid lg:grid-cols-3 gap-4">

@@ -58,7 +58,7 @@ export default function Bots() {
   };
 
   const handleStopLive = () => runAction("Bots LIVE detenidos", () => base44.functions.invoke("stopLiveBots", { closeOpenTrades: false }));
-  const handleCloseOpenTrades = () => runAction("Cierre de operaciones solicitado", () => base44.functions.invoke("tradingTick", { forceClose: true }));
+  const handleCloseOpenTrades = () => runAction("Cierre de operaciones solicitado", () => base44.functions.invoke("tradingLoop", { forceClose: true }));
   const handleRunCycle = () => runAction("Ciclo LIVE ejecutado", () => base44.functions.invoke("tradingLoop", { autoMode: true }));
 
   if (isLoading) {
@@ -70,7 +70,7 @@ export default function Bots() {
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <h2 className="text-2xl font-bold text-foreground tracking-tight">Control de Bots LIVE</h2>
-          <p className="text-sm text-muted-foreground mt-1">Trading real continuo con Kraken Spot, capital bajo y gestión automática por tradingTick.</p>
+          <p className="text-sm text-muted-foreground mt-1">Trading real continuo con Kraken Spot, capital bajo y gestión automática por tradingLoop.</p>
         </div>
         <div className="flex gap-2 flex-wrap">
           <Button disabled={runningAction} onClick={handleValidate} variant="outline" className="gap-2"><ShieldCheck className="w-4 h-4" />Validar entorno LIVE</Button>

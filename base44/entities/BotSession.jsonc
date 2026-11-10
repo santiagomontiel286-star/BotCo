@@ -17,13 +17,36 @@
       "type": "string"
     },
     "last_tick_at": {
-      "type": "string"
+      "type": "string",
+      "description": "\u00faltimo ciclo COMPLETADO con \u00e9xito de tradingLoop"
     },
     "last_scanner_at": {
       "type": "string"
     },
     "last_execution_at": {
       "type": "string"
+    },
+    "last_cycle_started_at": {
+      "type": "string",
+      "description": "inicio del ciclo en curso, para detectar cortes por tiempo"
+    },
+    "last_cycle_status": {
+      "type": "string",
+      "enum": [
+        "running",
+        "ok",
+        "failed"
+      ],
+      "enumColors": [
+        "blue",
+        "green",
+        "red"
+      ],
+      "description": "estado del \u00faltimo ciclo de tradingLoop"
+    },
+    "last_cycle_error": {
+      "type": "string",
+      "description": "error del \u00faltimo ciclo fallido"
     },
     "last_cycle_summary": {
       "type": "string"

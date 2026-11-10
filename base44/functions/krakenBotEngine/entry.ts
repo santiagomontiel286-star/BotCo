@@ -92,7 +92,8 @@ async function getLastPrice(pair) {
 }
 
 async function placeOrder(pair, side, volume, apiKey, apiSecret) {
-  return krakenPrivate("AddOrder", { pair, type: side, ordertype: "market", volume: volume.toString() }, apiKey, apiSecret);
+  // Motor retirado: no envía órdenes a Kraken. El único motor es tradingLoop.
+  return { error: ["motor retirado, usa tradingLoop"] };
 }
 
 async function getAvailableEUR(apiKey, apiSecret) {

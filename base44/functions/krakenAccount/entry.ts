@@ -43,16 +43,9 @@ Deno.serve(async (req) => {
   const user = await base44.auth.me();
   if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
-  // Use keys from request payload if provided, else fall back to env vars
-  let bodyApiKey, bodyApiSecret;
-  try {
-    const body = await req.json();
-    bodyApiKey = body?.apiKey;
-    bodyApiSecret = body?.apiSecret;
-  } catch {}
-
-  const KRAKEN_KEY = bodyApiKey || Deno.env.get('KRAKEN_API_KEY');
-  const KRAKEN_SECRET = bodyApiSecret || Deno.env.get('KRAKEN_API_SECRET');
+  // Solo secretos del backend: nunca se aceptan claves desde el cuerpo de la petición.
+  const KRAKEN_KEY = Deno.env.get('KRAKEN_API_KEY');
+  const KRAKEN_SECRET = Deno.env.get('KRAKEN_API_SECRET');
 
   if (!KRAKEN_KEY || !KRAKEN_SECRET) {
     return Response.json({ error: 'API keys no configuradas. Ve a Ajustes e introduce tus credenciales de Kraken.' }, { status: 400 });

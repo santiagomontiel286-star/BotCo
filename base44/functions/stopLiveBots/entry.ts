@@ -10,7 +10,7 @@ Deno.serve(async (req) => {
     const entities = base44.asServiceRole.entities;
     let closeResult = null;
     if (payload.closeOpenTrades === true) {
-      const tick = await base44.functions.invoke('tradingTick', { forceClose: true });
+      const tick = await base44.functions.invoke('tradingLoop', { forceClose: true });
       closeResult = tick.data || tick;
     }
 

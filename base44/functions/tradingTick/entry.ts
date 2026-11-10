@@ -313,8 +313,8 @@ Deno.serve(async (req) => {
     const liveBots = bots.filter(bot => bot.status === 'active' && bot.trading_mode === 'live' && bot.live_enabled === true && (bot.exchange || 'kraken') === 'kraken');
 
     if (validateOnly) return Response.json({ ok: env.ok, ...env, liveSession: !!liveSession, liveBots: liveBots.length, supportedPairs: SUPPORTED_PAIRS, message: env.ok ? 'Entorno LIVE válido para capital bajo' : 'Entorno LIVE incompleto o bloqueado' });
-    assertLiveEnv();
-    if (!liveSession) return Response.json({ ok: true, skipped: true, reason: 'No hay BotSession LIVE activa', tickId: id });
+    // Ejecución de órdenes desactivada: tradingLoop es el único motor. Este ciclo solo sigue sirviendo para lectura.
+    return Response.json({ ok: true, disabled: true, reason: 'Ejecución de órdenes desactivada: tradingLoop es el único motor', tickId: id });
     if (!runOnce && !autoMode && !forceClose) return Response.json({ error: 'Payload inválido: usa runOnce, autoMode, forceClose o validateOnly' }, { status: 400 });
     if (!liveBots.length && !forceClose) return Response.json({ ok: true, skipped: true, reason: 'No hay bots LIVE activos', tickId: id });
 

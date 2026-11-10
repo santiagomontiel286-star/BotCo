@@ -72,6 +72,10 @@
     "close_txid": {
       "type": "string"
     },
+    "exchange_stop_txid": {
+      "type": "string",
+      "description": "txid de la orden stop-loss real colocada en el exchange"
+    },
     "amount": {
       "type": "number"
     },
@@ -86,7 +90,14 @@
       "enum": [
         "open",
         "closed",
-        "cancelled"
+        "cancelled",
+        "orphaned"
+      ],
+      "enumColors": [
+        "blue",
+        "green",
+        "gray",
+        "yellow"
       ]
     },
     "stop_loss": {

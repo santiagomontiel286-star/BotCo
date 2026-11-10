@@ -178,6 +178,8 @@ Deno.serve(async (req) => {
   try {
     const base44 = createClientFromRequest(req);
     const payload = await req.json().catch(() => ({}));
+    // Automatización pausada: tradingLoop es el único escáner y motor de órdenes.
+    if (payload.force !== true) return Response.json({ ok: true, paused: true, reason: 'Escáner pausado: tradingLoop es el único escáner y motor' });
     const autoMode = payload.autoMode === true;
     const user = await base44.auth.me().catch(() => null);
     if (!autoMode && !user) return Response.json({ error: 'Unauthorized' }, { status: 401 });

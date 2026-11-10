@@ -257,9 +257,15 @@ async function closeTradeMarket(trade, currentPrice, closeRatio = 1) {
   const rules = await getAssetPairRules(pair);
   let closeAmount = Math.min(requestedPartial, availableAsset * 0.995);
   let volume = roundDown(closeAmount, rules.lot_decimals);
-  if (closeRatio < 1 && (!volume || (rules.ordermin && volume < rules.ordermin) || (rules.costmin && volume * currentPrice < rules.costmin))) {
-    closeAmount = Math.min(requestedFull, availableAsset * 0.995);
-    volume = roundDown(closeAmount, rules.lot_decimals);
+  if (closeRatio < 1) {
+    const remaining = Math.max(0, totalAmount - volume);
+    const partBelowMin = !volume || (rules.ordermin && volume < rules.ordermin) || (rules.costmin && volume * currentPrice < rules.costmin);
+    const remainingBelowMin = remaining > 0 && ((rules.ordermin && remaining < rules.ordermin) || (rules.costmin && remaining * currentPrice < rules.costmin));
+    // Nunca cerrar en parcial si alguna de las dos partes queda por debajo del mínimo: se cierra el 100 %
+    if (partBelowMin || remainingBelowMin) {
+      closeAmount = Math.min(requestedFull, availableAsset * 0.995);
+      volume = roundDown(closeAmount, rules.lot_decimals);
+    }
   }
   if (!volume || volume <= 0 || (rules.ordermin && volume < rules.ordermin)) throw new Error(`Volumen de cierre inferior al mínimo Kraken para ${displayPair(pair)}`);
   if (rules.costmin && volume * currentPrice < rules.costmin) throw new Error(`Coste de cierre inferior al mínimo Kraken para ${displayPair(pair)}`);
@@ -451,6 +457,9 @@ Deno.serve(async (req) => {
     if (!runOnce && !autoMode && !forceClose) return Response.json({ error: 'Payload inválido: usa runOnce, autoMode, forceClose o validateOnly' }, { status: 400 });
     if (!liveBots.length && !forceClose) return Response.json({ ok: true, skipped: true, reason: 'No hay bots LIVE activos', tickId: id });
 
+    // Marca de inicio: si el ciclo se corta por tiempo, el panel lo detecta como ciclo no completado
+    try { await entities.BotSession.update(liveSession.id, { last_cycle_started_at: new Date().toISOString(), last_cycle_status: 'running' }); } catch {}
+
     const nowIso = new Date().toISOString();
     const results = [];
     let balances = await getBalances();
@@ -535,13 +544,13 @@ Deno.serve(async (req) => {
     const totalPnl = closedTrades.reduce((sum, trade) => sum + Number(trade.profit_loss || 0), 0);
     const loopTick = new Date().toISOString();
     const summary = { loopTick, scannerTick: scanner.scannerTick, executionTick: nowIso, scannedPairs: SUPPORTED_PAIRS, openTrades: openTrades.length, signalsCreated: scanner.signalsCreated || 0, signalsAccepted: signalStats.signalsAccepted, signalsRejected: signalStats.signalsRejected + (scanner.signalsRejected || 0), tradesOpened: signalStats.tradesOpened, tradesClosed: signalStats.tradesClosed, reasons: [...(scanner.reasons || []), ...signalStats.reasons].slice(0, 10) };
-    await entities.BotSession.update(liveSession.id, { last_tick_at: loopTick, last_scanner_at: scanner.scannerTick, last_execution_at: nowIso, total_trades: closedTrades.length + openTrades.length, total_pnl: Number(totalPnl.toFixed(8)), last_cycle_summary: JSON.stringify(summary), last_error: (signalStats.tradesOpened || signalStats.tradesClosed) ? '' : (summary.reasons[0]?.reason || '') });
+    await entities.BotSession.update(liveSession.id, { last_tick_at: loopTick, last_cycle_status: 'ok', last_cycle_error: '', last_scanner_at: scanner.scannerTick, last_execution_at: nowIso, total_trades: closedTrades.length + openTrades.length, total_pnl: Number(totalPnl.toFixed(8)), last_cycle_summary: JSON.stringify(summary), last_error: (signalStats.tradesOpened || signalStats.tradesClosed) ? '' : (summary.reasons[0]?.reason || '') });
     return Response.json({ ok: true, tickId: id, ...summary, autoMode, runOnce, forceClose, env: { maxQuote: env.maxQuote, maxOpenTrades: env.maxOpenTrades, minReservedQuote: env.minReservedQuote, intervalMinutes: env.intervalMinutes }, scanner, results });
   } catch (error) {
     try {
       const base44 = createClientFromRequest(req);
       const sessions = await base44.asServiceRole.entities.BotSession.filter({ active: true }, '-created_date', 1);
-      if (sessions[0]?.id) await base44.asServiceRole.entities.BotSession.update(sessions[0].id, { last_error: error.message, last_tick_at: new Date().toISOString() });
+      if (sessions[0]?.id) await base44.asServiceRole.entities.BotSession.update(sessions[0].id, { last_error: error.message, last_cycle_status: 'failed', last_cycle_error: `${new Date().toISOString()} · ${error.message}` });
       await base44.asServiceRole.entities.Alert.create({ title: 'tradingLoop LIVE bloqueado', message: error.message, severity: 'critical', source: 'tradingLoop LIVE', is_read: false });
     } catch {}
     return Response.json({ ok: false, error: error.message }, { status: 500 });
