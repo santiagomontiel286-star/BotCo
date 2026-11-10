@@ -147,7 +147,8 @@ async function getTicker(pair) {
   const price = Number(ticker.c?.[0] || 0);
   const volume24h = Number(ticker.v?.[1] || 0);
   if (!ask || !bid || !price || ask <= bid) throw new Error(`ticker inválido para ${displayPair(pair)}`);
-  return { price, bid, ask, spreadPct: ((ask - bid) / price) * 100, volume24h };
+  const open24 = Number(ticker.o || 0);
+  return { price, bid, ask, spreadPct: ((ask - bid) / price) * 100, volume24h, open24, changePct: open24 ? ((price - open24) / open24) * 100 : 0 };
 }
 
 async function getAssetPairRules(pair) {
@@ -157,11 +158,11 @@ async function getAssetPairRules(pair) {
   return { pair: normalizePair(pair), status: String(raw.status || 'online'), ordermin: Number(raw.ordermin || 0), costmin: Number(raw.costmin || 0), lot_decimals: Number(raw.lot_decimals ?? 8), pair_decimals: Number(raw.pair_decimals ?? 2) };
 }
 
-async function getCandles(pair, interval = 5) {
+async function getCandles(pair, interval = 5, limit = 240) {
   const result = await krakenPublic('OHLC', { pair: normalizePair(pair), interval });
   const key = Object.keys(result).find(item => item !== 'last');
   // La última vela de OHLC está sin cerrar: se descarta en todas las decisiones
-  return (result[key] || []).slice(0, -1).slice(-240).map(row => ({ time: Number(row[0]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]), volume: Number(row[6]) }));
+  return (result[key] || []).slice(0, -1).slice(-limit).map(row => ({ time: Number(row[0]), open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]), volume: Number(row[6]) }));
 }
 
 function liquidityCheck(candles, ticker, minQuote) {
@@ -564,7 +565,33 @@ async function verifyOpenStops({ entities, openTrades, tickId: loopId }) {
   return { report, closedIds };
 }
 
-async function riskGate({ entities, riskConfig, bot, session, pair, balances, openTrades, ticker, rules, signal, profile, takerFeePct }) {
+async function dailyLimits(entities, riskConfig) {
+  const since = new Date(); since.setUTCHours(0, 0, 0, 0);
+  const liveTrades = await entities.Trade.filter({ mode: 'live' }, '-created_date', 100);
+  const todayTrades = liveTrades.filter(trade => new Date(trade.entry_date || trade.created_date).getTime() >= since.getTime());
+  if (todayTrades.length >= Number(riskConfig.max_trades_per_day || 3)) return { ok: false, reason: `máximo ${riskConfig.max_trades_per_day} trades al día alcanzado` };
+  // Pérdida máxima del día: lo perdido en los cerrados + lo que pueden perder los abiertos en su stop
+  const realized = todayTrades.reduce((sum, trade) => sum + Math.min(0, Number(trade.profit_loss || 0)), 0);
+  const openRisk = todayTrades.filter(trade => trade.status === 'open').reduce((sum, trade) => sum + Math.max(0, (Number(trade.entry_price || 0) - Number(trade.stop_loss || 0)) * Number(trade.amount || 0)), 0);
+  return { ok: true, used: Math.abs(realized) + openRisk, count: todayTrades.length };
+}
+
+// Puerta de riesgo para señales DayTrader: re-dimensiona con el precio FRESCO y comprueba los límites
+async function riskGateDayTrader({ entities, riskConfig, pair, balances, ticker, rules, takerFeePct, dayTrader }) {
+  const cfg = { ...DT_DEFAULTS, ...riskConfig };
+  if (!inEntryWindow(Date.now(), cfg)) return { ok: false, reason: 'fuera de la ventana de entrada' };
+  const market = agentMarketMonitor({ ticker, rules, cfg });
+  if (!market.ok) return { ok: false, reason: market.reason };
+  const capitalEUR = getCapitalEUR(balances);
+  const budget = agentBudget({ plan: dayTrader.plan, ask: ticker.ask, feePct: takerFeePct, capitalEUR, rules, riskConfig, cfg });
+  if (!budget.ok) return { ok: false, reason: budget.reason };
+  const day = await dailyLimits(entities, riskConfig);
+  if (!day.ok) return { ok: false, reason: day.reason };
+  if (day.used + budget.maxLossEUR > Number(riskConfig.max_daily_loss_eur || 0)) return { ok: false, reason: `pérdida máxima del día: ${day.used.toFixed(4)} € usados + ${budget.maxLossEUR} € de esta > ${riskConfig.max_daily_loss_eur} €` };
+  return { ok: true, capitalEUR, orderQuote: budget.orderEUR, minQuote: minRequiredQuote(rules, ticker.price), volume: budget.qty, profile: { name: 'day_trader' }, exposure: 0, rewardRisk: { ok: true, ratio: budget.netRR }, lossPerTrade: budget.maxLossEUR, plan: dayTrader.plan, budget };
+}
+
+async function riskGate({ entities, riskConfig, bot, session, pair, balances, openTrades, ticker, rules, signal, profile, takerFeePct, dayTrader = null }) {
   if (riskConfig.kill_switch) return { ok: false, reason: 'kill_switch activo en RiskConfig' };
   if (bot.status !== 'active' || bot.trading_mode !== 'live' || bot.live_enabled !== true) return { ok: false, reason: 'Bot no está LIVE activo' };
   if (!session || session.active !== true || session.mode !== 'live') return { ok: false, reason: 'No hay BotSession LIVE activa' };
@@ -573,6 +600,7 @@ async function riskGate({ entities, riskConfig, bot, session, pair, balances, op
   if (openTrades.some(trade => normalizePair(trade.pair) === normalizePair(pair))) return { ok: false, reason: 'ya existe trade abierto del mismo par' };
   if (String(rules.status || 'online') !== 'online') return { ok: false, reason: `par ${displayPair(pair)} no está online en Kraken` };
   if (ticker.spreadPct > 0.25) return { ok: false, reason: 'spread alto' };
+  if (dayTrader) return riskGateDayTrader({ entities, riskConfig, pair, balances, ticker, rules, takerFeePct, dayTrader });
   if (!profile.pairs.includes(normalizePair(pair))) return { ok: false, reason: `perfil ${profile.name}: par no prioritario` };
   if (signal && Number(signal.score || 0) < profile.minScore) return { ok: false, reason: `score ${signal.score} inferior al mínimo ${profile.minScore} del perfil ${profile.name}` };
 
@@ -606,6 +634,209 @@ async function riskGate({ entities, riskConfig, bot, session, pair, balances, op
 
   return { ok: true, capitalEUR, orderQuote, minQuote, volume, liquidity, profile, exposure, risk, rewardRisk: rr, lossPerTrade };
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// AGENTES "DAY TRADER" (adaptado de github.com/Jakeschincariol/day-trader-skill, MIT)
+// a cripto spot en Kraken, cuenta en EUR. Cadena por par:
+//   Monitor de mercado → Temporizador de entrada (ORB) → Planificador de salida →
+//   Máquina del Tiempo → Gestor de presupuesto → (riskGate) → Ejecutor con stop en Kraken
+// Cada agente puede rechazar y explica por qué. Nada aquí promete ganancias.
+// ═══════════════════════════════════════════════════════════════════════════════════════
+const DT_DEFAULTS = {
+  strategy_engine: 'day_trader',      // 'day_trader' | 'sentinel' (motor anterior por score)
+  session_anchor_utc_hour: 7,         // inicio de la "sesión" diaria (07:00 UTC = 08:00 en España)
+  or_minutes: 15,                     // rango de apertura: primeras 3 velas de 5 min
+  entry_window_utc_start: '07:15',
+  entry_window_utc_end: '19:00',
+  stop_rule: 'or-low',                // 'or-low' (más ancho: menos comisiones relativas) | 'or-mid'
+  target_r: 3,
+  min_volume_x: 1.0,                  // volumen de la vela de disparo ≥ X × media del rango
+  max_fee_r: 0.5,                     // las comisiones+spread no pueden costar más de 0,5 R
+  tm_runs: 10000,
+  tm_seed: 19,
+  tm_min_edge_points: 5,              // la Máquina del Tiempo debe dar ≥5 puntos sobre el equilibrio
+  moving_block_pct: 8,                // no entrar si el par se mueve ±8 % en el día (noticia/volatilidad)
+  max_position_pct: 85,
+  cash_buffer_pct: 10
+};
+
+function hmToMinutes(value) { const [h, m] = String(value || '0:0').split(':').map(Number); return (h || 0) * 60 + (m || 0); }
+function utcMinutes(ms) { const d = new Date(ms); return d.getUTCHours() * 60 + d.getUTCMinutes(); }
+function sessionAnchorMs(nowMs, hour) { const d = new Date(nowMs); const anchor = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), hour, 0, 0); return anchor > nowMs ? anchor - 86400000 : anchor; }
+function inEntryWindow(ms, cfg) { const m = utcMinutes(ms); return m >= hmToMinutes(cfg.entry_window_utc_start) && m <= hmToMinutes(cfg.entry_window_utc_end); }
+function mulberry32(seed) { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+
+// Agente: Monitor de mercado (sustituto cripto del monitor de noticias + "halt")
+function agentMarketMonitor({ ticker, rules, cfg }) {
+  if (String(rules.status || 'online') !== 'online') return { ok: false, reason: `HALT: el par está "${rules.status}" en Kraken` };
+  if (Math.abs(ticker.changePct) >= cfg.moving_block_pct) return { ok: false, reason: `MOVING ${ticker.changePct.toFixed(2)} % hoy: movimiento anómalo, posible noticia; no se entra` };
+  return { ok: true, changePct: Number(ticker.changePct.toFixed(2)) };
+}
+
+// Agente: Temporizador de entrada — ruptura del rango de apertura, solo velas CERRADAS
+function agentEntry({ candles, cfg, nowMs }) {
+  const anchor = sessionAnchorMs(nowMs, cfg.session_anchor_utc_hour);
+  const orEnd = anchor + cfg.or_minutes * 60000;
+  if (nowMs < orEnd + 5 * 60000) return { status: 'forming', reason: 'el rango de apertura aún se está formando' };
+  const expected = Math.round(cfg.or_minutes / 5);
+  const range = candles.filter(c => c.time * 1000 >= anchor && c.time * 1000 < orEnd);
+  if (range.length < expected) return { status: 'no_data', reason: `rango incompleto (${range.length}/${expected} velas)` };
+  const rangeHigh = Math.max(...range.map(c => c.high));
+  const rangeLow = Math.min(...range.map(c => c.low));
+  const avgVol = average(range.map(c => c.volume));
+  const after = candles.filter(c => c.time * 1000 >= orEnd);
+  const idx = after.findIndex(c => c.close > rangeHigh && (cfg.min_volume_x <= 0 || c.volume >= cfg.min_volume_x * avgVol));
+  if (idx < 0) { const last = after.at(-1); return { status: 'waiting', rangeHigh, rangeLow, reason: `esperando: último cierre ${last?.close ?? '—'} bajo el máximo del rango ${rangeHigh}` }; }
+  const bar = after[idx];
+  const triggerMs = bar.time * 1000 + 5 * 60000;
+  // Un solo disparo por día: el primero. Si no es la última vela cerrada, ya es tarde (otra operación)
+  if (idx < after.length - 1) return { status: 'stale', rangeHigh, rangeLow, reason: `el disparo fue a las ${new Date(triggerMs).toISOString().slice(11, 16)} UTC; entrar ahora sería tarde` };
+  if (!inEntryWindow(triggerMs, cfg)) return { status: 'expired', rangeHigh, rangeLow, reason: 'disparo fuera de la ventana de entrada' };
+  return { status: 'triggered', entry: bar.close, rangeHigh, rangeLow, triggerTime: new Date(triggerMs).toISOString(), volumeX: avgVol ? Number((bar.volume / avgVol).toFixed(2)) : null, reason: `cierre ${bar.close} por encima del rango ${rangeHigh}` };
+}
+
+// Agente: Planificador de salida — stop y objetivo ANTES de entrar
+function agentExit({ entry, rangeHigh, rangeLow, decimals, feePct, spreadPct, cfg }) {
+  const factor = 10 ** Number(decimals ?? 2);
+  const rawStop = cfg.stop_rule === 'or-mid' ? (rangeHigh + rangeLow) / 2 : rangeLow;
+  const stop = Math.floor(rawStop * factor) / factor;            // redondeo alejándose de la entrada
+  if (stop >= entry) return { ok: false, reason: 'stop en la entrada o por encima' };
+  const risk = entry - stop;
+  const target = Math.round((entry + cfg.target_r * risk) * factor) / factor;
+  if (target <= entry) return { ok: false, reason: 'objetivo en la entrada o por debajo' };
+  const costPerUnit = entry * (2 * feePct + spreadPct) / 100;   // comisiones ida+vuelta + spread
+  const feeR = costPerUnit / risk;
+  if (feeR > cfg.max_fee_r) return { ok: false, reason: `comisiones+spread cuestan ${feeR.toFixed(2)} R (máx ${cfg.max_fee_r}): el rango es demasiado estrecho para las comisiones` };
+  return { ok: true, entry, stop, target, risk, riskPct: Number((risk / entry * 100).toFixed(3)), targetR: cfg.target_r, feeR: Number(feeR.toFixed(3)), stopRule: cfg.stop_rule };
+}
+
+// Agente: Máquina del Tiempo — 10.000 simulaciones con velas reales de la misma hora del día
+function agentTimeMachine({ plan, candles, intervalMin, nowMs, maxHoldMin, cfg }) {
+  const slots = Math.round(1440 / intervalMin);
+  const anchorToday = sessionAnchorMs(nowMs, cfg.session_anchor_utc_hour);
+  const slotOf = ms => Math.floor((((ms - anchorToday) % 86400000) + 86400000) % 86400000 / (intervalMin * 60000));
+  const bySession = new Map();
+  for (let i = 1; i < candles.length; i++) {
+    const c = candles[i]; const prev = candles[i - 1];
+    if (c.time - prev.time !== intervalMin * 60) continue;           // solo velas contiguas
+    const ms = c.time * 1000;
+    if (ms >= anchorToday) continue;                                  // nunca mezclar el día de hoy
+    const session = Math.floor((ms - anchorToday) / 86400000);
+    if (!bySession.has(session)) bySession.set(session, []);
+    bySession.get(session).push({ slot: slotOf(ms), r: [c.open / prev.close, c.high / prev.close, c.low / prev.close, c.close / prev.close] });
+  }
+  const full = [...bySession.values()].filter(rows => rows.length === slots);
+  if (full.length < 20) return { ok: false, reason: `solo ${full.length} sesiones completas (mínimo 20): sin datos suficientes para simular` };
+  const pool = Array.from({ length: slots }, () => []);
+  for (const rows of full) for (const row of rows) pool[row.slot].push(row.r);
+  const steps = Math.max(1, Math.floor(maxHoldMin / intervalMin));
+  const startSlot = slotOf(nowMs);
+  const rand = mulberry32(cfg.tm_seed);
+  const { entry, stop, target, risk, feeR, targetR } = plan;
+  let tFirst = 0, sFirst = 0, neither = 0, sumR = 0; const finals = [];
+  for (let run = 0; run < cfg.tm_runs; run++) {
+    let p = entry; let outcome = 0;
+    for (let k = 0; k < steps; k++) {
+      const slot = (startSlot + k) % slots;
+      const near = pool[(slot + Math.floor(rand() * 5) - 2 + slots) % slots];
+      const r = near[Math.floor(rand() * near.length)];
+      const low = p * r[2]; const high = p * r[1];
+      if (low <= stop) { outcome = -1; break; }                       // si toca ambos, cuenta como stop
+      if (high >= target) { outcome = 1; break; }
+      p *= r[3];
+    }
+    if (outcome === 1) { tFirst++; sumR += targetR - feeR; finals.push(target); }
+    else if (outcome === -1) { sFirst++; sumR += -1 - feeR; finals.push(stop); }
+    else { neither++; sumR += (p - entry) / risk - feeR; finals.push(p); }
+  }
+  finals.sort((a, b) => a - b);
+  const runs = cfg.tm_runs; const hits = tFirst + sFirst;
+  const pTarget = hits ? tFirst / hits : 0;
+  const breakeven = (1 + feeR) / (1 + targetR);                       // con comisiones
+  const edge = (pTarget - breakeven) * 100;
+  const avgNetR = sumR / runs;
+  const verdict = Math.abs(edge) < 5 ? (targetR === 1 ? 'Cerca de cara o cruz' : 'Cerca del equilibrio') : edge >= 15 ? 'Fuertemente hacia el objetivo' : edge >= 5 ? 'Se inclina al objetivo' : edge <= -15 ? 'Fuertemente hacia el stop' : 'Se inclina al stop';
+  const ok = edge >= cfg.tm_min_edge_points && avgNetR > 0;
+  return {
+    ok, verdict, seed: cfg.tm_seed, runs, sessions: full.length, intervalMin,
+    targetFirstPct: Number((tFirst / runs * 100).toFixed(1)), stopFirstPct: Number((sFirst / runs * 100).toFixed(1)), neitherPct: Number((neither / runs * 100).toFixed(1)),
+    breakevenPct: Number((breakeven * 100).toFixed(1)), targetShareOfHitsPct: Number((pTarget * 100).toFixed(1)), edgePoints: Number(edge.toFixed(1)), avgNetR: Number(avgNetR.toFixed(3)),
+    p5: finals[Math.floor(runs * 0.05)], median: finals[Math.floor(runs / 2)], p95: finals[Math.floor(runs * 0.95)],
+    reason: ok ? `${verdict}: ${(pTarget * 100).toFixed(1)} % objetivo vs ${(breakeven * 100).toFixed(1)} % necesario, R medio neto ${avgNetR.toFixed(3)}` : `${verdict} (${edge.toFixed(1)} puntos, R medio neto ${avgNetR.toFixed(3)}): no compensa`
+  };
+}
+
+// Agente: Gestor de presupuesto — tamaño = el menor de 4 límites, comisiones incluidas
+function agentBudget({ plan, ask, feePct, capitalEUR, rules, riskConfig, cfg }) {
+  const entry = Math.max(plan.entry, ask);                            // si el precio subió, más riesgo → menos unidades
+  const riskPerUnit = entry - plan.stop;
+  if (riskPerUnit <= 0) return { ok: false, reason: 'el precio ya está en el stop o por debajo' };
+  const feePerUnit = entry * 2 * feePct / 100;
+  const limits = {
+    perdida_maxima: Number(riskConfig.max_loss_per_trade_eur || 0) / (riskPerUnit + feePerUnit),
+    tope_posicion: capitalEUR * cfg.max_position_pct / 100 / entry,
+    orden_maxima: Number(riskConfig.max_order_eur || Infinity) / entry,
+    efectivo: capitalEUR * (1 - cfg.cash_buffer_pct / 100) / entry
+  };
+  const decidedBy = Object.entries(limits).sort((a, b) => a[1] - b[1])[0][0];
+  const qty = roundDown(Math.max(0, Math.min(...Object.values(limits))), rules.lot_decimals);
+  if (!qty || qty < rules.ordermin || qty * entry < rules.costmin) return { ok: false, reason: `tamaño ${qty} por debajo del mínimo de Kraken (decide: ${decidedBy})`, decidedBy };
+  const netRR = ((plan.target - entry) - feePerUnit) / (riskPerUnit + feePerUnit);
+  if (netRR < Number(riskConfig.min_reward_risk || 1.5)) return { ok: false, reason: `beneficio/riesgo neto ${netRR.toFixed(2)} < ${riskConfig.min_reward_risk}: el movimiento ya ha ocurrido en parte` };
+  return { ok: true, qty, entry, orderEUR: Number((qty * entry).toFixed(4)), maxLossEUR: Number((qty * (riskPerUnit + feePerUnit)).toFixed(4)), netRR: Number(netRR.toFixed(2)), decidedBy };
+}
+
+function pickDayTraderBot(liveBots) { return liveBots.find(bot => /trend/i.test(bot.name || '')) || liveBots.find(bot => !/guardian/i.test(bot.name || '')) || liveBots[0]; }
+
+// Escáner + cadena de agentes para cada par. Crea una Signal solo si TODOS los agentes aprueban.
+async function runDayTraderScanner(entities, liveSession, liveBots, balances, openTrades, riskConfig) {
+  const cfg = { ...DT_DEFAULTS, ...riskConfig };
+  const nowMs = Date.now();
+  const bot = pickDayTraderBot(liveBots);
+  const expiresAt = new Date(nowMs + 3 * 60 * 1000).toISOString();
+  const report = []; const created = [];
+  if (!bot) return { scannerTick: new Date(nowMs).toISOString(), engine: 'day_trader', signalsCreated: 0, signalsRejected: 0, reasons: [{ reason: 'no hay bot LIVE activo' }] };
+  for (const pair of SUPPORTED_PAIRS) {
+    const entryLog = { pair: displayPair(pair) };
+    try {
+      if (openTrades.some(trade => normalizePair(trade.pair) === pair)) throw new Error('ya hay un trade abierto en este par');
+      const [ticker, rules, candles] = await Promise.all([getTicker(pair), getAssetPairRules(pair), getCandles(pair, 5, 288)]);
+      const market = agentMarketMonitor({ ticker, rules, cfg });
+      if (!market.ok) throw new Error(`Monitor: ${market.reason}`);
+      const entry = agentEntry({ candles, cfg, nowMs });
+      entryLog.entry = entry.status;
+      if (entry.status !== 'triggered') throw new Error(`Entrada: ${entry.reason}`);
+      const feePct = await getTakerFeePct(pair);
+      const plan = agentExit({ entry: entry.entry, rangeHigh: entry.rangeHigh, rangeLow: entry.rangeLow, decimals: rules.pair_decimals, feePct, spreadPct: ticker.spreadPct, cfg });
+      if (!plan.ok) throw new Error(`Salida: ${plan.reason}`);
+      const hourly = await getCandles(pair, 60, 720);
+      const tm = agentTimeMachine({ plan, candles: hourly, intervalMin: 60, nowMs, maxHoldMin: Number(cfg.max_hold_minutes || DEFAULT_RISK.max_hold_minutes), cfg });
+      entryLog.timeMachine = tm.reason;
+      if (!tm.ok) throw new Error(`Máquina del Tiempo: ${tm.reason}`);
+      const budget = agentBudget({ plan, ask: ticker.ask, feePct, capitalEUR: getCapitalEUR(balances), rules, riskConfig, cfg });
+      if (!budget.ok) throw new Error(`Presupuesto: ${budget.reason}`);
+      const dayTrader = { market, entry, plan, timeMachine: tm, budget, feePct };
+      const signal = await entities.Signal.create({
+        bot_name: bot.name, bot_id: bot.id, strategy: 'DayTrader ORB', exchange: 'kraken', pair, side: 'buy',
+        confidence: Math.min(0.99, Number((0.6 + tm.edgePoints / 100).toFixed(2))), score: Math.min(100, Math.round(70 + tm.edgePoints)),
+        reason: `DayTrader ORB · ${entry.reason} · stop ${plan.stop} · objetivo ${plan.target} (${plan.targetR}R) · ${tm.reason} · ${budget.qty} uds (${budget.orderEUR} €, pérdida máx ${budget.maxLossEUR} €)`,
+        price: ticker.price, timeframe: '5m', status: 'new', expires_at: expiresAt,
+        min_required_quote: Number(minRequiredQuote(rules, ticker.price).toFixed(8)), available_quote: Number(getCapitalEUR(balances).toFixed(8)), order_quote: budget.orderEUR,
+        spread_pct: Number(ticker.spreadPct.toFixed(4)), volume_score: 0, raw_data: JSON.stringify({ dayTrader })
+      });
+      await createAlert(entities, `DayTrader: señal en ${displayPair(pair)}`, signal.reason, 'info');
+      created.push(signal);
+      report.push({ ...entryLog, ok: true });
+    } catch (error) {
+      report.push({ ...entryLog, ok: false, reason: error.message });
+    }
+  }
+  const summary = { scannerTick: new Date(nowMs).toISOString(), engine: 'day_trader', scannedPairs: SUPPORTED_PAIRS, scannedBots: 1, evaluations: SUPPORTED_PAIRS.length, signalsCreated: created.length, signalsRejected: report.filter(r => !r.ok).length, reasons: report.filter(r => !r.ok).map(r => ({ pair: r.pair, reason: r.reason })), agents: report };
+  if (liveSession?.id) await entities.BotSession.update(liveSession.id, { last_scanner_at: summary.scannerTick, last_error: '' });
+  return summary;
+}
+
+function parseDayTrader(signal) { try { return JSON.parse(signal?.raw_data || '{}').dayTrader || null; } catch { return null; } }
 
 Deno.serve(async (req) => {
   const id = tickId();
@@ -646,7 +877,10 @@ Deno.serve(async (req) => {
     const stopCheck = await verifyOpenStops({ entities, openTrades, tickId: id });
     results.push(...stopCheck.report.map(item => ({ action: 'stop_check', ...item })));
     openTrades = openTrades.filter(trade => !stopCheck.closedIds.includes(trade.id));
-    const scanner = forceClose ? { scannerTick: nowIso, scannedPairs: SUPPORTED_PAIRS, scannedBots: liveBots.length, evaluations: 0, signalsCreated: 0, signalsRejected: 0, reasons: [] } : await runScanner(entities, liveSession, liveBots, balances, openTrades, env);
+    const engine = String(riskConfig.strategy_engine || DT_DEFAULTS.strategy_engine);
+    const scanner = forceClose ? { scannerTick: nowIso, scannedPairs: SUPPORTED_PAIRS, scannedBots: liveBots.length, evaluations: 0, signalsCreated: 0, signalsRejected: 0, reasons: [] }
+      : engine === 'day_trader' ? await runDayTraderScanner(entities, liveSession, liveBots, balances, openTrades, riskConfig)
+      : await runScanner(entities, liveSession, liveBots, balances, openTrades, env);
     let freshSignals = await getFreshSignals(entities);
     const signalStats = { signalsAccepted: 0, signalsRejected: 0, tradesOpened: 0, tradesClosed: 0, reasons: [] };
 
@@ -694,7 +928,8 @@ Deno.serve(async (req) => {
           if (!SUPPORTED_PAIRS.includes(pair)) throw new Error('par no soportado por universo LIVE bajo capital');
           const [ticker, rules, takerFeePct] = await Promise.all([getTicker(pair), getAssetPairRules(pair), getTakerFeePct(pair)]);
           const profile = capitalProfile(getCapitalEUR(balances) + quoteExposure(openTrades, 'EUR'));
-          const gate = await riskGate({ entities, riskConfig, bot, session: liveSession, pair, balances, openTrades, ticker, rules, signal, profile, takerFeePct });
+          const dayTrader = parseDayTrader(signal);
+          const gate = await riskGate({ entities, riskConfig, bot, session: liveSession, pair, balances, openTrades, ticker, rules, signal, profile, takerFeePct, dayTrader });
           if (!gate.ok) throw new Error(gate.reason);
 
           signalStats.signalsAccepted += 1;
@@ -703,8 +938,10 @@ Deno.serve(async (req) => {
           if (!exchangeOrderId) throw new Error('Kraken no devolvió txid de apertura');
           const execution = await getOrderExecution(exchangeOrderId);
           const tradeRisk = adjustedRisk(bot.strategy || signal.strategy || 'default', ticker.spreadPct, gate.profile, takerFeePct);
-          const rawStopPrice = execution.executed_price * (1 - tradeRisk.stopLossPct / 100);
-          const trade = await entities.Trade.create({ exchange: 'kraken', mode: 'live', bot_name: bot.name, pair: displayPair(pair), side: 'buy', entry_price: execution.executed_price, executed_price: execution.executed_price, executed_volume: execution.executed_volume, amount: execution.executed_volume, fee: execution.fee, fees: execution.fee, cost: execution.cost, txid: exchangeOrderId, status: 'open', stop_loss: Number(roundTick(rawStopPrice, rules.pair_decimals)), take_profit: Number(roundTick(execution.executed_price * (1 + tradeRisk.takeProfitPct / 100), rules.pair_decimals)), entry_date: nowIso, exchange_order_id: exchangeOrderId, signal_reason: signal.reason, confidence: signal.confidence, raw_response: JSON.stringify({ orderResponse, orderExecution: execution.raw_order, signal, risk: { profile: gate.profile, orderQuote: gate.orderQuote, minQuote: gate.minQuote, capitalEUR: gate.capitalEUR, avgQuoteVolume5m: gate.liquidity?.avgQuoteVolume, takeProfitPct: tradeRisk.takeProfitPct, stopLossPct: tradeRisk.stopLossPct, takerFeePct, estimatedRoundTripFeesPct: tradeRisk.estimatedRoundTripFeesPct, rewardRisk: gate.rewardRisk, lossPerTrade: gate.lossPerTrade } }), opened_by_tick_id: id, last_error: '', notes: `LIVE spot market buy SentinelAI Pro · perfil ${gate.profile.name} · usado ${execution.cost.toFixed(4)} EUR · comisiones ${takerFeePct}%/lado · TP ${tradeRisk.takeProfitPct.toFixed(2)}% · SL ${tradeRisk.stopLossPct.toFixed(2)}%` });
+          // DayTrader: stop y objetivo fijados ANTES de entrar por el Planificador de salida
+          const rawStopPrice = gate.plan ? gate.plan.stop : execution.executed_price * (1 - tradeRisk.stopLossPct / 100);
+          const takeProfitPrice = gate.plan ? gate.plan.target : execution.executed_price * (1 + tradeRisk.takeProfitPct / 100);
+          const trade = await entities.Trade.create({ exchange: 'kraken', mode: 'live', bot_name: bot.name, pair: displayPair(pair), side: 'buy', entry_price: execution.executed_price, executed_price: execution.executed_price, executed_volume: execution.executed_volume, amount: execution.executed_volume, fee: execution.fee, fees: execution.fee, cost: execution.cost, txid: exchangeOrderId, status: 'open', stop_loss: Number(roundTick(rawStopPrice, rules.pair_decimals)), take_profit: Number(roundTick(takeProfitPrice, rules.pair_decimals)), entry_date: nowIso, exchange_order_id: exchangeOrderId, signal_reason: signal.reason, confidence: signal.confidence, raw_response: JSON.stringify({ orderResponse, orderExecution: execution.raw_order, signal, risk: { profile: gate.profile, orderQuote: gate.orderQuote, minQuote: gate.minQuote, capitalEUR: gate.capitalEUR, avgQuoteVolume5m: gate.liquidity?.avgQuoteVolume, takeProfitPct: tradeRisk.takeProfitPct, stopLossPct: tradeRisk.stopLossPct, takerFeePct, estimatedRoundTripFeesPct: tradeRisk.estimatedRoundTripFeesPct, rewardRisk: gate.rewardRisk, lossPerTrade: gate.lossPerTrade } }), opened_by_tick_id: id, last_error: '', notes: `LIVE spot market buy SentinelAI Pro · perfil ${gate.profile.name} · usado ${execution.cost.toFixed(4)} EUR · comisiones ${takerFeePct}%/lado · TP ${tradeRisk.takeProfitPct.toFixed(2)}% · SL ${tradeRisk.stopLossPct.toFixed(2)}%` });
           const stop = await ensureExchangeStop({ entities, trade, rules, stopPrice: rawStopPrice });
           if (!stop.ok) {
             // Sin stop-loss en el exchange tras 2 intentos: se cierra la posición a mercado
