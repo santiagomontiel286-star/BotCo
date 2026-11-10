@@ -23,6 +23,7 @@ import WalletPage from './pages/Wallet';
 import SettingsPage from './pages/Settings';
 import Alerts from './pages/Alerts';
 import SessionReports from './pages/SessionReports';
+import Office from './pages/Office';
 import ScrollToTop from './components/ScrollToTop';
 import { Toaster as SonnerToaster } from 'sonner';
 
@@ -60,6 +61,7 @@ const AuthenticatedApp = () => {
         <Route element={<Layout />}>
           <Route path="/" element={<Dashboard />} />
           <Route path="/operar" element={<Operate />} />
+          <Route path="/oficina" element={<Office />} />
           <Route path="/bots" element={<Bots />} />
           <Route path="/market" element={<Market />} />
           <Route path="/ai" element={<AIAnalysis />} />

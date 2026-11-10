@@ -7,7 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { ShieldAlert, Save } from "lucide-react";
 import { toast } from "sonner";
 
-const DEFAULTS = { kill_switch: false, max_open_trades: 1, max_loss_per_trade_eur: 0.2, max_daily_loss_eur: 0.6, max_trades_per_day: 3, min_reward_risk: 1.5 };
+const DEFAULTS = { kill_switch: false, strategy_engine: "day_trader", max_open_trades: 1, max_loss_per_trade_eur: 0.2, max_daily_loss_eur: 0.6, max_trades_per_day: 3, min_reward_risk: 1.5, max_hold_minutes: 240, max_order_eur: 16, target_r: 3, tm_min_edge_points: 5 };
 
 const FIELDS = [
   { key: "max_open_trades", label: "Máx. trades abiertos", step: "1" },
@@ -15,10 +15,14 @@ const FIELDS = [
   { key: "max_daily_loss_eur", label: "Pérdida máx. diaria (€)", step: "0.01" },
   { key: "max_trades_per_day", label: "Máx. trades al día", step: "1" },
   { key: "min_reward_risk", label: "Beneficio/riesgo mínimo", step: "0.1" },
+  { key: "max_hold_minutes", label: "Tiempo máx. por operación (min)", step: "15" },
+  { key: "max_order_eur", label: "Orden máxima (€)", step: "1" },
+  { key: "target_r", label: "Objetivo (múltiplos del riesgo)", step: "0.5" },
+  { key: "tm_min_edge_points", label: "Ventaja mínima Máquina del Tiempo (puntos)", step: "1" },
 ];
 
 function toPayload(config) {
-  const payload = { kill_switch: !!config.kill_switch };
+  const payload = { kill_switch: !!config.kill_switch, strategy_engine: config.strategy_engine === "sentinel" ? "sentinel" : "day_trader" };
   FIELDS.forEach(field => { payload[field.key] = Number(config[field.key]); });
   return payload;
 }
@@ -62,6 +66,14 @@ export default function RiskGatePanel() {
           <span className={`text-xs font-semibold ${config.kill_switch ? "text-loss" : "text-primary"}`}>{config.kill_switch ? "Kill switch ON" : "Kill switch OFF"}</span>
           <Switch checked={!!config.kill_switch} onCheckedChange={value => { const next = { ...config, kill_switch: value }; setConfig(next); save(next); }} />
         </div>
+      </div>
+
+      <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2 mb-4">
+        <div>
+          <p className="text-xs font-semibold text-foreground">Motor de decisión: {config.strategy_engine === "sentinel" ? "SentinelAI (anterior)" : "Agentes DayTrader"}</p>
+          <p className="text-[11px] text-muted-foreground">DayTrader: ruptura del rango de apertura + Máquina del Tiempo. Lo ves trabajar en Oficina.</p>
+        </div>
+        <Switch checked={config.strategy_engine !== "sentinel"} onCheckedChange={value => { const next = { ...config, strategy_engine: value ? "day_trader" : "sentinel" }; setConfig(next); save(next); }} />
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
