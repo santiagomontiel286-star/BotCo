@@ -1,165 +1,60 @@
-import { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { base44 } from "@/api/base44Client";
-import { LayoutDashboard, Cpu, TrendingUp, Brain, Shield, Clock, Wallet, Settings, Bell, X, Activity, Archive, ChevronRight, BarChart3, Zap, Building2 } from "lucide-react";
+import { LayoutDashboard, Building2, Clock, Settings, X, Activity, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/lib/AuthContext";
+import { useBot } from "@/hooks/useBot";
 
-const navItems = [
-  { path: "/", label: "Dashboard", icon: LayoutDashboard },
-  { path: "/operar", label: "Operar", icon: Zap },
+const NAV = [
+  { path: "/", label: "Panel", icon: LayoutDashboard },
   { path: "/oficina", label: "Oficina", icon: Building2 },
-  { path: "/bots", label: "Bots", icon: Cpu },
-  { path: "/wallet", label: "Wallet", icon: Wallet },
-];
-
-const analysisItems = [
-  { path: "/market", label: "Mercado", icon: TrendingUp },
-  { path: "/ai", label: "Análisis IA", icon: Brain },
-  { path: "/risk", label: "Riesgo", icon: Shield },
-  { path: "/alerts", label: "Alertas", icon: Bell },
-];
-
-const recordsItems = [
   { path: "/history", label: "Historial", icon: Clock },
-  { path: "/sessions", label: "Sesiones", icon: Archive },
+  { path: "/settings", label: "Ajustes", icon: Settings },
 ];
-
-const PROFILE_LABELS = { conservador: "Modo Conservador", balanceado: "Modo Balanceado", agresivo: "Modo Agresivo" };
 
 export default function Sidebar({ open, onClose }) {
   const location = useLocation();
-  const [openMenu, setOpenMenu] = useState(null);
-  const { data: sessions = [] } = useQuery({
-    queryKey: ["activeBotSession"],
-    queryFn: () => base44.entities.BotSession.filter({ active: true }),
-    refetchInterval: 15000,
-  });
-  const session = sessions[0];
-  const profileLabel = PROFILE_LABELS[session?.risk_profile] || "Modo Conservador";
-  const isActive = session?.active;
-  const isAnalysisActive = analysisItems.some(item => item.path === location.pathname);
-  const isRecordsActive = recordsItems.some(item => item.path === location.pathname);
-
-  const renderSubmenu = (items) => (
-    <div className="mt-1 ml-4 space-y-1 border-l border-sidebar-border pl-2">
-      {items.map(item => {
-        const active = location.pathname === item.path;
-        return (
-          <Link
-            key={item.path}
-            to={item.path}
-            onClick={onClose}
-            className={cn(
-              "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all",
-              active ? "bg-primary/10 text-primary" : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-            )}
-          >
-            <item.icon className="w-4 h-4" />
-            {item.label}
-          </Link>
-        );
-      })}
-    </div>
-  );
+  const { logout } = useAuth();
+  const { running, mode } = useBot();
 
   return (
     <>
-      {open && (
-        <div className="fixed inset-0 bg-black/60 z-40 lg:hidden" onClick={onClose} />
-      )}
-      <aside className={cn(
-        "fixed top-0 left-0 z-50 h-full w-64 border-r border-sidebar-border flex flex-col transition-transform duration-300 lg:translate-x-0",
-        session?.mode === "demo" ? "bg-slate-900" : "bg-sidebar",
-        open ? "translate-x-0" : "-translate-x-full"
-      )}>
-        <div className="p-6 flex items-center justify-between">
+      {open && <div className="fixed inset-0 bg-black/60 z-40 lg:hidden" onClick={onClose} />}
+      <aside className={cn("fixed top-0 left-0 z-50 h-full w-60 bg-sidebar border-r border-sidebar-border flex flex-col transition-transform duration-300 lg:translate-x-0", open ? "translate-x-0" : "-translate-x-full")}>
+        <div className="p-5 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-primary/20 flex items-center justify-center glow-green-sm">
-              <Activity className="w-5 h-5 text-primary" />
-            </div>
+            <div className="w-9 h-9 rounded-lg bg-primary/20 flex items-center justify-center"><Activity className="w-5 h-5 text-primary" /></div>
             <div>
-              <h1 className="font-bold text-foreground text-lg tracking-tight">BotCo</h1>
-              <p className="text-[10px] text-muted-foreground uppercase tracking-widest">AI Trading</p>
+              <h1 className="font-bold text-foreground text-lg tracking-tight leading-none">BotCo</h1>
+              <p className="text-[10px] text-muted-foreground uppercase tracking-widest mt-1">Trading en Kraken</p>
             </div>
           </div>
-          <button onClick={onClose} className="lg:hidden text-muted-foreground hover:text-foreground">
-            <X className="w-5 h-5" />
-          </button>
+          <button onClick={onClose} className="lg:hidden text-muted-foreground hover:text-foreground" aria-label="Cerrar menú"><X className="w-5 h-5" /></button>
         </div>
 
         <nav className="flex-1 px-3 py-2 space-y-1">
-          {navItems.map(item => {
+          {NAV.map(item => {
             const active = location.pathname === item.path;
             return (
-              <Link
-                key={item.path}
-                to={item.path}
-                onClick={onClose}
-                className={cn(
-                  "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200",
-                  active
-                    ? "bg-primary/10 text-primary glow-green-sm"
-                    : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                )}
-              >
-                <item.icon className={cn("w-[18px] h-[18px]", active && "text-primary")} />
-                {item.label}
+              <Link key={item.path} to={item.path} onClick={onClose}
+                className={cn("flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
+                  active ? "bg-primary/10 text-primary" : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground")}>
+                <item.icon className="w-[18px] h-[18px]" />{item.label}
               </Link>
             );
           })}
-
-          <div>
-            <button
-              onClick={() => setOpenMenu(openMenu === "analysis" ? null : "analysis")}
-              className={cn(
-                "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200",
-                isAnalysisActive ? "bg-primary/10 text-primary glow-green-sm" : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-              )}
-            >
-              <BarChart3 className="w-[18px] h-[18px]" />
-              Análisis
-              <ChevronRight className={cn("w-4 h-4 ml-auto transition-transform", openMenu === "analysis" && "rotate-90")} />
-            </button>
-            {(openMenu === "analysis" || isAnalysisActive) && renderSubmenu(analysisItems)}
-          </div>
-
-          <div>
-            <button
-              onClick={() => setOpenMenu(openMenu === "records" ? null : "records")}
-              className={cn(
-                "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200",
-                isRecordsActive ? "bg-primary/10 text-primary glow-green-sm" : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-              )}
-            >
-              <Clock className="w-[18px] h-[18px]" />
-              Historial
-              <ChevronRight className={cn("w-4 h-4 ml-auto transition-transform", openMenu === "records" && "rotate-90")} />
-            </button>
-            {(openMenu === "records" || isRecordsActive) && renderSubmenu(recordsItems)}
-          </div>
-
-          <Link
-            to="/settings"
-            onClick={onClose}
-            className={cn(
-              "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 mt-3 pt-3 border-t border-sidebar-border",
-              location.pathname === "/settings"
-                ? "bg-primary/10 text-primary glow-green-sm"
-                : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-            )}
-          >
-            <Settings className={cn("w-[18px] h-[18px]", location.pathname === "/settings" && "text-primary")} />
-            Ajustes
-          </Link>
         </nav>
 
-        <div className="p-4 mx-3 mb-4 rounded-lg bg-primary/5 border border-primary/10">
-          <div className="flex items-center gap-2 mb-1">
-            <div className={`w-2 h-2 rounded-full ${isActive ? 'bg-primary animate-pulse' : 'bg-muted-foreground'}`} />
-            <span className="text-xs font-medium text-primary">{isActive ? "Sistema Activo" : "Sistema Inactivo"}</span>
+        <div className="p-3 space-y-2">
+          <div className="px-3 py-3 rounded-lg bg-background/50 border border-sidebar-border">
+            <div className="flex items-center gap-2">
+              <span className={cn("w-2 h-2 rounded-full", running ? "bg-primary animate-pulse" : "bg-muted-foreground/50")} />
+              <span className="text-xs font-medium text-foreground">{running ? "Bot encendido" : "Bot apagado"}</span>
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-1">{mode === "live" ? "Dinero real en Kraken" : "Modo simulado"}</p>
           </div>
-          <p className="text-[11px] text-muted-foreground">{profileLabel}</p>
+          <button onClick={() => logout()} className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-sidebar-accent">
+            <LogOut className="w-4 h-4" />Cerrar sesión
+          </button>
         </div>
       </aside>
     </>

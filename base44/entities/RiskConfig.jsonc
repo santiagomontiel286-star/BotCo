@@ -5,7 +5,7 @@
     "kill_switch": {
       "type": "boolean",
       "default": false,
-      "description": "Si est\u00e1 activo, tradingLoop no abre ninguna compra (las ventas de cierre nunca se bloquean)"
+      "description": "Si está activo, tradingLoop no abre ninguna compra (las ventas de cierre nunca se bloquean)"
     },
     "max_open_trades": {
       "type": "number",
@@ -13,11 +13,11 @@
     },
     "max_loss_per_trade_eur": {
       "type": "number",
-      "default": 0.2
+      "default": 0.5
     },
     "max_daily_loss_eur": {
       "type": "number",
-      "default": 0.6
+      "default": 1.5
     },
     "max_trades_per_day": {
       "type": "number",
@@ -32,14 +32,70 @@
       "default": 240,
       "description": "Tiempo máximo de una operación; al superarlo se cierra a mercado"
     },
-    "strategy_engine": { "type": "string", "enum": ["day_trader", "sentinel"], "default": "day_trader", "description": "Motor de decisión: agentes DayTrader (ORB + Máquina del Tiempo) o el SentinelAI anterior por score" },
-    "session_anchor_utc_hour": { "type": "number", "default": 7, "description": "Hora UTC de inicio de la sesión para el rango de apertura (7 = 08:00 en España)" },
-    "entry_window_utc_start": { "type": "string", "default": "07:15" },
-    "entry_window_utc_end": { "type": "string", "default": "19:00" },
-    "stop_rule": { "type": "string", "enum": ["or-low", "or-mid"], "default": "or-low" },
-    "target_r": { "type": "number", "default": 3, "description": "Objetivo en múltiplos del riesgo" },
-    "tm_min_edge_points": { "type": "number", "default": 5, "description": "Ventaja mínima (puntos sobre el equilibrio con comisiones) que exige la Máquina del Tiempo" },
-    "max_order_eur": { "type": "number", "default": 16 }
+    "session_anchor_utc_hour": {
+      "type": "number",
+      "default": 7,
+      "description": "Hora UTC de inicio de la sesión para el rango de apertura (7 = 08:00 en España)"
+    },
+    "entry_window_utc_start": {
+      "type": "string",
+      "default": "07:15"
+    },
+    "entry_window_utc_end": {
+      "type": "string",
+      "default": "19:00"
+    },
+    "stop_rule": {
+      "type": "string",
+      "enum": [
+        "or-low",
+        "or-mid"
+      ],
+      "default": "or-low"
+    },
+    "target_r": {
+      "type": "number",
+      "default": 3,
+      "description": "Objetivo en múltiplos del riesgo"
+    },
+    "tm_min_edge_points": {
+      "type": "number",
+      "default": 5,
+      "description": "Ventaja mínima (puntos sobre el equilibrio con comisiones) que exige la Máquina del Tiempo"
+    },
+    "max_order_eur": {
+      "type": "number",
+      "default": 45
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "paper",
+        "live"
+      ],
+      "default": "paper",
+      "description": "paper = simulado con cartera virtual; live = dinero real en Kraken"
+    },
+    "paper_capital_eur": {
+      "type": "number",
+      "default": 50,
+      "description": "Capital virtual del modo simulado"
+    },
+    "cooldown_after_stop_minutes": {
+      "type": "number",
+      "default": 60,
+      "description": "Pausa de entradas tras un stop-loss"
+    },
+    "stoploss_guard_limit": {
+      "type": "number",
+      "default": 2,
+      "description": "Número de stop-loss en 24 h que pausan las entradas"
+    },
+    "max_drawdown_pct": {
+      "type": "number",
+      "default": 10,
+      "description": "Caída máxima de la sesión antes de pausar las entradas"
+    }
   },
   "required": [
     "max_open_trades"

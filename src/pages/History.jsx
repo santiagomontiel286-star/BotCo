@@ -1,98 +1,81 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { base44 } from "@/api/base44Client";
-import { Clock } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import { cn } from "@/lib/utils";
+import { eur, signedEur, pct, fmtPair, EXIT_LABELS } from "@/hooks/useBot";
 
-const tooltipStyle = { background: "hsl(224,35%,10%)", border: "1px solid hsl(224,20%,18%)", borderRadius: 8, color: "hsl(210,20%,92%)", fontSize: 11 };
+const MODES = [{ key: "demo", label: "Simulado" }, { key: "live", label: "Real" }];
+const fmtDate = d => (d ? new Date(d).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—");
+const duration = t => { if (!t.exit_date) return "—"; const m = Math.round((new Date(t.exit_date) - new Date(t.entry_date || t.created_date)) / 60000); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`; };
 
 export default function History() {
-  const [statusFilter, setStatusFilter] = useState("all");
-  const { data: sessions = [] } = useQuery({ queryKey: ["activeBotSession"], queryFn: () => base44.entities.BotSession.filter({ active: true }), refetchInterval: 15000 });
-  const activeMode = sessions[0]?.mode === "demo" ? "demo" : "live";
-  const { data: trades = [], isLoading } = useQuery({ queryKey: ["trades", activeMode], queryFn: () => base44.entities.Trade.filter({ mode: activeMode }, "-created_date", 50) });
-
-  const filtered = statusFilter === "all" ? trades : trades.filter(trade => trade.status === statusFilter);
-  const closedTrades = trades.filter(trade => trade.status === "closed");
-  const totalPnL = closedTrades.reduce((sum, trade) => sum + (trade.profit_loss || 0), 0);
-  const wins = closedTrades.filter(trade => (trade.profit_loss || 0) > 0).length;
-  const winRate = closedTrades.length ? (wins / closedTrades.length * 100) : 0;
-  const equityCurve = [...closedTrades].reverse().reduce((rows, trade, index) => {
-    const previous = rows[index - 1]?.equity || 0;
-    rows.push({ t: new Date(trade.entry_date || trade.created_date).toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit" }), equity: Number((previous + (trade.profit_loss || 0)).toFixed(6)) });
-    return rows;
-  }, []);
+  const [mode, setMode] = useState("demo");
+  const { data: trades = [], isLoading } = useQuery({
+    queryKey: ["history", mode],
+    queryFn: async () => { const r = await base44.entities.Trade.filter({ mode }, "-created_date", 500); return Array.isArray(r) ? r : r?.items || []; },
+  });
+  const closed = trades.filter(t => t.status === "closed");
+  const total = closed.reduce((s, t) => s + Number(t.profit_loss || 0), 0);
+  const fees = closed.reduce((s, t) => s + Number(t.fee || 0) + Number(t.close_fee || 0), 0);
+  const wins = closed.filter(t => Number(t.profit_loss) > 0);
+  const losses = closed.filter(t => Number(t.profit_loss) <= 0);
+  const avgWin = wins.length ? wins.reduce((s, t) => s + Number(t.profit_loss), 0) / wins.length : 0;
+  const avgLoss = losses.length ? losses.reduce((s, t) => s + Number(t.profit_loss), 0) / losses.length : 0;
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center">
-          <Clock className="w-5 h-5 text-accent" />
-        </div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-2xl font-bold text-foreground tracking-tight">Historial</h2>
-          <p className="text-sm text-muted-foreground">Registro completo de operaciones · {activeMode.toUpperCase()}</p>
+          <p className="text-sm text-muted-foreground mt-0.5">Todas las operaciones, con comisiones incluidas en el resultado.</p>
+        </div>
+        <div className="inline-flex rounded-lg border border-border p-1 bg-card">
+          {MODES.map(m => (
+            <button key={m.key} onClick={() => setMode(m.key)} className={cn("px-3 py-1.5 text-sm rounded-md", mode === m.key ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground")}>{m.label}</button>
+          ))}
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-3">
-        <div className="bg-card rounded-xl border border-border p-4"><span className="text-xs text-muted-foreground">Total Trades</span><p className="text-xl font-mono font-bold text-foreground mt-1">{trades.length}</p></div>
-        <div className="bg-card rounded-xl border border-border p-4"><span className="text-xs text-muted-foreground">Win Rate</span><p className="text-xl font-mono font-bold text-primary mt-1">{winRate.toFixed(1)}%</p></div>
-        <div className="bg-card rounded-xl border border-border p-4"><span className="text-xs text-muted-foreground">PnL Total</span><p className={cn("text-xl font-mono font-bold mt-1", totalPnL >= 0 ? "text-profit" : "text-loss")}>{totalPnL >= 0 ? "+" : ""}{totalPnL.toFixed(6)}</p></div>
-      </div>
-
-      <div className="bg-card rounded-xl border border-border p-5">
-        <h3 className="text-sm font-semibold text-foreground mb-4">Curva de PnL real</h3>
-        <div className="h-48">
-          {equityCurve.length === 0 ? (
-            <div className="h-full flex items-center justify-center text-sm text-muted-foreground">{isLoading ? "Cargando operaciones..." : "Sin datos reales todavía"}</div>
-          ) : (
-            <ResponsiveContainer>
-              <AreaChart data={equityCurve}>
-                <defs><linearGradient id="eqHistGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="hsl(160,59%,40%)" stopOpacity={0.3} /><stop offset="100%" stopColor="hsl(160,59%,40%)" stopOpacity={0} /></linearGradient></defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(224,20%,18%)" />
-                <XAxis dataKey="t" tick={{ fill: "hsl(215,15%,55%)", fontSize: 9 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: "hsl(215,15%,55%)", fontSize: 9 }} axisLine={false} tickLine={false} />
-                <Tooltip contentStyle={tooltipStyle} />
-                <Area type="monotone" dataKey="equity" stroke="hsl(160,59%,40%)" strokeWidth={2} fill="url(#eqHistGrad)" dot={false} />
-              </AreaChart>
-            </ResponsiveContainer>
-          )}
-        </div>
-      </div>
-
-      <div className="bg-card rounded-xl border border-border p-5">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-semibold text-foreground">Todas las Operaciones</h3>
-          <div className="flex gap-1">
-            {["all", "open", "closed"].map(status => (
-              <Button key={status} size="sm" variant={statusFilter === status ? "default" : "ghost"} className="text-xs h-7 px-2.5" onClick={() => setStatusFilter(status)}>
-                {status === "all" ? "Todas" : status === "open" ? "Abiertas" : "Cerradas"}
-              </Button>
-            ))}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {[
+          ["Resultado total", signedEur(total), total > 0 ? "up" : total < 0 ? "down" : null],
+          ["Operaciones", `${closed.length}`, null, `${wins.length} ganadas · ${losses.length} perdidas`],
+          ["Ganancia media / pérdida media", `${signedEur(avgWin)} / ${signedEur(avgLoss)}`, null],
+          ["Comisiones pagadas", eur(fees), null],
+        ].map(([label, value, tone, sub]) => (
+          <div key={label} className="bg-card rounded-xl border border-border p-4">
+            <p className="text-xs text-muted-foreground">{label}</p>
+            <p className={cn("text-lg font-mono font-semibold mt-1", tone === "up" ? "text-primary" : tone === "down" ? "text-destructive" : "text-foreground")}>{value}</p>
+            {sub && <p className="text-[11px] text-muted-foreground">{sub}</p>}
           </div>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead><tr className="text-muted-foreground border-b border-border"><th className="text-left py-2">Bot</th><th className="text-left py-2">Par</th><th className="text-left py-2">Lado</th><th className="text-right py-2">Entrada</th><th className="text-right py-2">Salida</th><th className="text-right py-2">PnL</th><th className="text-right py-2">Estado</th><th className="text-right py-2">Orden entrada</th><th className="text-right py-2">Orden cierre</th></tr></thead>
-            <tbody>{filtered.map(trade => (
-              <tr key={trade.id} className="border-b border-border/50 hover:bg-muted/30">
-                <td className="py-2.5 font-medium text-foreground">{trade.bot_name}</td>
-                <td className="py-2.5 font-mono">{trade.pair}</td>
-                <td className="py-2.5"><span className={trade.side === "buy" ? "text-profit" : "text-loss"}>{trade.side?.toUpperCase()}</span></td>
-                <td className="py-2.5 text-right font-mono">${trade.entry_price?.toLocaleString()}</td>
-                <td className="py-2.5 text-right font-mono">{trade.exit_price ? `$${trade.exit_price.toLocaleString()}` : "—"}</td>
-                <td className={cn("py-2.5 text-right font-mono font-medium", (trade.profit_loss || 0) >= 0 ? "text-profit" : "text-loss")}>{trade.profit_loss != null ? `${trade.profit_loss >= 0 ? "+" : ""}${trade.profit_loss.toFixed(6)}` : "—"}</td>
-                <td className="py-2.5 text-right"><span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${trade.status === "open" ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground"}`}>{trade.status}</span></td>
-                <td className="py-2.5 text-right font-mono text-[10px]">{trade.exchange_order_id || "—"}</td>
-                <td className="py-2.5 text-right font-mono text-[10px]">{trade.close_order_id || "—"}</td>
+        ))}
+      </div>
+
+      <div className="bg-card rounded-xl border border-border overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-xs text-muted-foreground border-b border-border">
+              {["Fecha", "Par", "Estado", "Entrada", "Salida", "Duración", "Motivo", "Resultado"].map((h, i) => <th key={h} className={cn("px-4 py-3 font-medium", i >= 3 && i !== 6 ? "text-right" : "text-left")}>{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {trades.map(t => (
+              <tr key={t.id} className="border-b border-border/50 last:border-0">
+                <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{fmtDate(t.entry_date || t.created_date)}</td>
+                <td className="px-4 py-3 font-medium text-foreground">{fmtPair(t.pair)}</td>
+                <td className="px-4 py-3">{t.status === "open" ? <span className="text-chart-2">Abierta</span> : t.status === "closed" ? <span className="text-muted-foreground">Cerrada</span> : <span className="text-muted-foreground">{t.status}</span>}</td>
+                <td className="px-4 py-3 text-right font-mono">{t.entry_price ? Number(t.entry_price).toLocaleString("es-ES", { maximumFractionDigits: 6 }) : "—"}</td>
+                <td className="px-4 py-3 text-right font-mono">{t.exit_price ? Number(t.exit_price).toLocaleString("es-ES", { maximumFractionDigits: 6 }) : "—"}</td>
+                <td className="px-4 py-3 text-right text-muted-foreground whitespace-nowrap">{duration(t)}</td>
+                <td className="px-4 py-3 text-muted-foreground">{EXIT_LABELS[t.exit_reason] || (t.status === "closed" ? "—" : "")}</td>
+                <td className={cn("px-4 py-3 text-right font-mono whitespace-nowrap", t.profit_loss == null ? "text-muted-foreground" : Number(t.profit_loss) >= 0 ? "text-primary" : "text-destructive")}>
+                  {t.profit_loss == null ? "—" : <>{signedEur(t.profit_loss, 3)}<span className="block text-[10px] text-muted-foreground">{pct(t.profit_loss_percent)}</span></>}
+                </td>
               </tr>
-            ))}</tbody>
-          </table>
-          {filtered.length === 0 && <p className="text-sm text-muted-foreground text-center py-6">No hay operaciones en este filtro</p>}
-        </div>
+            ))}
+          </tbody>
+        </table>
+        {!isLoading && trades.length === 0 && <p className="text-sm text-muted-foreground text-center py-10">No hay operaciones en modo {mode === "live" ? "real" : "simulado"}.</p>}
       </div>
     </div>
   );
