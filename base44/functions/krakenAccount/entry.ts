@@ -1,5 +1,24 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.25';
 
+const KRAKEN_API = 'https://api.kraken.com';
+const EUR_KEYS = ['ZEUR', 'EUR'];
+const ASSET_TO_EUR_PAIR = {
+  XXBT: 'XBTEUR', XBT: 'XBTEUR',
+  XETH: 'ETHEUR', ETH: 'ETHEUR',
+  SOL: 'SOLEUR',
+  XXRP: 'XRPEUR', XRP: 'XRPEUR',
+  ADA: 'ADAEUR',
+  DOT: 'DOTEUR',
+  LINK: 'LINKEUR',
+  ATOM: 'ATOMEUR',
+};
+const DISPLAY_PAIRS = { XBTEUR: 'BTC/EUR', ETHEUR: 'ETH/EUR', SOLEUR: 'SOL/EUR', XRPEUR: 'XRP/EUR', ADAEUR: 'ADA/EUR', DOTEUR: 'DOT/EUR', LINKEUR: 'LINK/EUR', ATOMEUR: 'ATOM/EUR' };
+
+// Única fuente de verdad del capital real en EUR
+function getCapitalEUR(balances) {
+  return EUR_KEYS.reduce((sum, key) => sum + Number(balances?.[key] || 0), 0);
+}
+
 async function signKraken(path, postData, secret) {
   const nonce = postData.match(/nonce=(\d+)/)[1];
   const secretBuffer = Uint8Array.from(atob(secret), c => c.charCodeAt(0));
@@ -17,26 +36,10 @@ function nextNonce() {
   return n.toString();
 }
 
-
 async function krakenPublic(path) {
-  const res = await fetch(`https://api.kraken.com${path}`);
+  const res = await fetch(`${KRAKEN_API}${path}`);
   return res.json();
 }
-
-// Maps Kraken asset codes to ticker pair symbols
-const ASSET_TO_PAIR = {
-  XXBT: 'XXBTZUSD', XBT: 'XXBTZUSD',
-  XETH: 'XETHZUSD', ETH: 'XETHZUSD',
-  XLTC: 'XLTCZUSD', LTC: 'XLTCZUSD',
-  XXRP: 'XXRPZUSD', XRP: 'XXRPZUSD',
-  XDOT: 'DOTUSD',   DOT: 'DOTUSD',
-  SOL: 'SOLUSD',    USDT: 'USDTZUSD',
-  USDC: 'USDCUSD',  ADA: 'ADAUSD',
-  MATIC: 'MATICUSD', LINK: 'LINKUSD',
-  ATOM: 'ATOMUSD',   AVAX: 'AVAXUSD',
-  ZEUR: null, EUR: null, // will use EUR/USD rate
-  ZUSD: null, USD: null, // already USD
-};
 
 Deno.serve(async (req) => {
   const base44 = createClientFromRequest(req);
@@ -48,15 +51,14 @@ Deno.serve(async (req) => {
   const KRAKEN_SECRET = Deno.env.get('KRAKEN_API_SECRET');
 
   if (!KRAKEN_KEY || !KRAKEN_SECRET) {
-    return Response.json({ error: 'API keys no configuradas. Ve a Ajustes e introduce tus credenciales de Kraken.' }, { status: 400 });
+    return Response.json({ error: 'API keys no configuradas en los secretos del backend.' }, { status: 400 });
   }
 
-  // Override the private caller to use resolved keys
   const krakenPrivate = async (path, params = {}) => {
     const nonce = nextNonce();
     const postData = `nonce=${nonce}` + Object.entries(params).map(([k, v]) => `&${k}=${v}`).join('');
     const sign = await signKraken(path, postData, KRAKEN_SECRET);
-    const res = await fetch(`https://api.kraken.com${path}`, {
+    const res = await fetch(`${KRAKEN_API}${path}`, {
       method: 'POST',
       headers: { 'API-Key': KRAKEN_KEY, 'API-Sign': sign, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: postData,
@@ -64,85 +66,85 @@ Deno.serve(async (req) => {
     return res.json();
   };
 
-  // 1. Fetch balance
+  // 1. Balance
   const balanceData = await krakenPrivate('/0/private/Balance');
   if (balanceData.error?.length) {
     return Response.json({ error: balanceData.error[0] }, { status: 400 });
   }
 
-  // 2. Clean balance (non-zero only)
   const rawBalance = {};
   for (const [asset, amount] of Object.entries(balanceData.result || {})) {
     if (parseFloat(amount) > 0.000001) rawBalance[asset] = parseFloat(amount);
   }
 
-  // 3. Collect pairs we need to price
-  const pairsNeeded = new Set();
+  // 2. Pares EUR que necesitamos valorar + reglas (decimales de precio, mínimos)
+  const pairSet = new Set();
   for (const asset of Object.keys(rawBalance)) {
-    const pair = ASSET_TO_PAIR[asset];
-    if (pair) pairsNeeded.add(pair);
+    const pair = ASSET_TO_EUR_PAIR[asset];
+    if (pair) pairSet.add(pair);
+  }
+  const requestedPairs = [...pairSet];
+  const pairMeta = {};
+
+  if (requestedPairs.length) {
+    const pairsData = await krakenPublic(`/0/public/AssetPairs?pair=${requestedPairs.join(',')}`);
+    for (const [key, info] of Object.entries(pairsData.result || {})) {
+      const alt = String(info.altname || key).replace('/', '').toUpperCase();
+      pairMeta[alt] = {
+        key,
+        pair: DISPLAY_PAIRS[alt] || alt,
+        decimals: Number(info.pair_decimals ?? 2),
+        lot_decimals: Number(info.lot_decimals ?? 8),
+        ordermin: Number(info.ordermin || 0),
+        costmin: Number(info.costmin || 0),
+        status: String(info.status || 'online'),
+      };
+    }
   }
 
-  // 4. Fetch EUR/USD rate + all asset tickers in parallel
-  const tickerPairsStr = [...pairsNeeded].join(',');
+  // 3. Precios en EUR + tasa EUR/USD solo para los campos heredados
   const [tickerData, eurUsdData] = await Promise.all([
-    tickerPairsStr ? krakenPublic(`/0/public/Ticker?pair=${tickerPairsStr}`) : Promise.resolve({ result: {} }),
+    requestedPairs.length ? krakenPublic(`/0/public/Ticker?pair=${requestedPairs.join(',')}`) : Promise.resolve({ result: {} }),
     krakenPublic('/0/public/Ticker?pair=EURUSD'),
   ]);
-
   const prices = tickerData.result || {};
-  const eurUsd = parseFloat(Object.values(eurUsdData.result || {})[0]?.c?.[0] || '1.08');
+  const eurUsd = parseFloat(Object.values(eurUsdData.result || {})[0]?.c?.[0] || '1');
 
-  // 5. Build enriched portfolio
   const portfolio = [];
-  let totalUSD = 0;
+  let totalEUR = 0;
 
   for (const [asset, amount] of Object.entries(rawBalance)) {
-    let usdPrice = 1;
-    const pair = ASSET_TO_PAIR[asset];
+    const meta = pairMeta[ASSET_TO_EUR_PAIR[asset]] || null;
+    const ticker = meta ? prices[meta.key] : null;
+    const priceEUR = ticker ? parseFloat(ticker.c[0]) : 0;
+    const valueEUR = amount * priceEUR;
+    const open = ticker ? parseFloat(ticker.o) : 0;
+    const change24h = open > 0 ? ((priceEUR - open) / open) * 100 : 0;
 
-    if (asset === 'ZEUR' || asset === 'EUR') {
-      usdPrice = eurUsd;
-    } else if (asset === 'ZUSD' || asset === 'USD') {
-      usdPrice = 1;
-    } else if (pair && prices[pair]) {
-      usdPrice = parseFloat(prices[pair].c[0]);
-    } else if (pair) {
-      // Try to find by matching pair key
-      const found = Object.entries(prices).find(([k]) => k.includes(asset.replace('X','').replace('Z','')));
-      usdPrice = found ? parseFloat(found[1].c[0]) : 0;
-    }
-
-    const usdValue = amount * usdPrice;
-    totalUSD += usdValue;
-
-    // Get 24h change
-    let change24h = 0;
-    if (pair && prices[pair]) {
-      const open = parseFloat(prices[pair].o);
-      change24h = open > 0 ? ((usdPrice - open) / open) * 100 : 0;
-    }
-
+    totalEUR += valueEUR;
     portfolio.push({
       asset,
       amount,
-      usdPrice,
-      usdValue: parseFloat(usdValue.toFixed(2)),
+      decimals: meta?.decimals ?? 2,
+      priceEUR,
+      valueEUR: parseFloat(valueEUR.toFixed(6)),
+      // Campos heredados para las vistas que aún muestran USD
+      usdPrice: parseFloat((priceEUR * eurUsd).toFixed(6)),
+      usdValue: parseFloat((valueEUR * eurUsd).toFixed(2)),
       change24h: parseFloat(change24h.toFixed(2)),
-      pct_of_total: 0, // filled below
+      pct_of_total: 0,
     });
   }
 
-  // Fill % of total
   for (const p of portfolio) {
-    p.pct_of_total = totalUSD > 0 ? parseFloat(((p.usdValue / totalUSD) * 100).toFixed(1)) : 0;
+    p.pct_of_total = totalEUR > 0 ? parseFloat(((p.valueEUR / totalEUR) * 100).toFixed(1)) : 0;
   }
+  portfolio.sort((a, b) => b.valueEUR - a.valueEUR);
 
-  portfolio.sort((a, b) => b.usdValue - a.usdValue);
-
-  // 6. Open orders
+  // 4. Órdenes abiertas + trades recientes
   const openOrdersData = await krakenPrivate('/0/private/OpenOrders', { trades: true });
-  const openOrders = Object.values(openOrdersData.result?.open || {}).map(o => ({
+  const openOrders = Object.entries(openOrdersData.result?.open || {}).map(([txid, o]) => ({
+    txid,
     pair: o.descr?.pair,
     type: o.descr?.type,
     ordertype: o.descr?.ordertype,
@@ -153,7 +155,6 @@ Deno.serve(async (req) => {
     opentm: new Date(o.opentm * 1000).toISOString(),
   }));
 
-  // 7. Recent trades
   const tradesData = await krakenPrivate('/0/private/TradesHistory', { trades: true });
   const trades = Object.values(tradesData.result?.trades || {}).slice(0, 30).map(t => ({
     pair: t.pair,
@@ -168,9 +169,12 @@ Deno.serve(async (req) => {
   }));
 
   return Response.json({
-    balance: rawBalance,         // raw asset → amount map (backwards compat)
-    portfolio,                   // enriched: asset, amount, usdPrice, usdValue, change24h, pct_of_total
-    totalUSD: parseFloat(totalUSD.toFixed(2)),
+    balance: rawBalance,
+    capitalEUR: parseFloat(getCapitalEUR(rawBalance).toFixed(8)),
+    totalEUR: parseFloat(totalEUR.toFixed(6)),
+    totalUSD: parseFloat((totalEUR * eurUsd).toFixed(2)),
+    portfolio,
+    pairs: Object.values(pairMeta),
     openOrders,
     trades,
     fetchedAt: new Date().toISOString(),

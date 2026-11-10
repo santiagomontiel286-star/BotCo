@@ -66,6 +66,9 @@ export default function useKrakenData({ intervalMs = 60000 } = {}) {
   const data = state.data;
   return {
     portfolio: data?.portfolio || [],
+    capitalEUR: data?.capitalEUR || 0,
+    totalEUR: data?.totalEUR || 0,
+    pairs: data?.pairs || [],
     totalUSD: data?.totalUSD || 0,
     balance: data?.balance || {},
     openOrders: data?.openOrders || [],

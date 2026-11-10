@@ -1,0 +1,73 @@
+{
+  "name": "RiskConfig",
+  "type": "object",
+  "properties": {
+    "kill_switch": {
+      "type": "boolean",
+      "default": false,
+      "description": "Si est\u00e1 activo, tradingLoop no abre ninguna compra (las ventas de cierre nunca se bloquean)"
+    },
+    "max_open_trades": {
+      "type": "number",
+      "default": 1
+    },
+    "max_loss_per_trade_eur": {
+      "type": "number",
+      "default": 0.2
+    },
+    "max_daily_loss_eur": {
+      "type": "number",
+      "default": 0.6
+    },
+    "max_trades_per_day": {
+      "type": "number",
+      "default": 3
+    },
+    "min_reward_risk": {
+      "type": "number",
+      "default": 1.5
+    }
+  },
+  "required": [
+    "max_open_trades"
+  ],
+  "rls": {
+    "create": {},
+    "read": {
+      "$or": [
+        {
+          "created_by_id": "{{user.id}}"
+        },
+        {
+          "user_condition": {
+            "role": "admin"
+          }
+        }
+      ]
+    },
+    "update": {
+      "$or": [
+        {
+          "created_by_id": "{{user.id}}"
+        },
+        {
+          "user_condition": {
+            "role": "admin"
+          }
+        }
+      ]
+    },
+    "delete": {
+      "$or": [
+        {
+          "created_by_id": "{{user.id}}"
+        },
+        {
+          "user_condition": {
+            "role": "admin"
+          }
+        }
+      ]
+    }
+  }
+}

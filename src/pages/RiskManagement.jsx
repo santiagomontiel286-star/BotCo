@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { base44 } from "@/api/base44Client";
 import { Shield, AlertTriangle, Target, TrendingDown, Lock, Pause } from "lucide-react";
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, BarChart, Bar } from "recharts";
+import RiskGatePanel from "@/components/RiskGatePanel";
 
 const ddData = Array.from({ length: 30 }, (_, i) => ({
   day: `${i + 1}`,
@@ -40,6 +41,8 @@ export default function RiskManagement() {
           <p className="text-sm text-muted-foreground">Protección de capital — estrategia ultra conservadora</p>
         </div>
       </div>
+
+      <RiskGatePanel />
 
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
         <div className="bg-card rounded-xl border border-border p-4">

@@ -47,12 +47,22 @@
       "type": "string",
       "enum": [
         "new",
+        "consumed",
         "accepted",
         "rejected",
         "expired",
         "executed"
       ],
-      "default": "new"
+      "enumColors": [
+        "blue",
+        "purple",
+        "gray",
+        "red",
+        "gray",
+        "green"
+      ],
+      "default": "new",
+      "description": "consumed al evaluarla en tradingLoop para que no se ejecute dos veces"
     },
     "expires_at": {
       "type": "string"
