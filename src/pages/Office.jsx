@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { base44 } from "@/api/base44Client";
+import { useBot } from "@/hooks/useBot";
 import { cn } from "@/lib/utils";
 import {
   Radar, Timer, Target, Hourglass, Calculator, ShieldCheck, Eye,
@@ -119,6 +120,7 @@ function ExecutorDesk({ execution, working }) {
 function WatchmanDesk({ stopChecks, execution }) {
   const monitoring = execution.filter(e => e.action === "monitoring");
   const closed = execution.filter(e => ["closed", "closed_no_stop"].includes(e.action));
+  const errors = execution.filter(e => e.action === "error");
   return (
     <div className="bg-card rounded-xl border border-border p-4 flex flex-col gap-3">
       <div className="flex items-center gap-3">
@@ -131,13 +133,14 @@ function WatchmanDesk({ stopChecks, execution }) {
         </div>
       </div>
       <div className="rounded-lg bg-background/70 border border-border p-3 font-mono text-[11px] leading-relaxed min-h-[112px]">
-        {stopChecks.length === 0 && monitoring.length === 0 && closed.length === 0 && <p className="text-muted-foreground">No hay posiciones abiertas que vigilar.</p>}
-        {stopChecks.map((c, i) => (
+        {stopChecks.length === 0 && monitoring.length === 0 && closed.length === 0 && errors.length === 0 && <p className="text-muted-foreground">No hay posiciones abiertas que vigilar.</p>}
+        {monitoring.length === 0 && stopChecks.map((c, i) => (
           <p key={`s${i}`} className={c.ok ? "text-foreground" : "text-destructive"}>
             {c.ok ? "🛡" : "⚠"} {c.pair}: {c.closedByStop ? "el stop saltó en Kraken" : c.recreated ? "stop recolocado" : c.ok ? "stop activo en Kraken" : c.reason}
           </p>
         ))}
         {monitoring.map((m, i) => <p key={`m${i}`} className="text-muted-foreground">{m.pair} {typeof m.pnlPercent === "number" ? `${m.pnlPercent >= 0 ? "+" : ""}${m.pnlPercent.toFixed(2)} %` : ""} · {m.reason}</p>)}
+        {errors.map((e, i) => <p key={`e${i}`} className="text-destructive">⚠ {e.pair}: {e.reason}</p>)}
         {closed.map((c, i) => <p key={`c${i}`} className={Number(c.pnl) >= 0 ? "text-primary" : "text-destructive"}>Cerrada {c.pair} · {Number(c.pnl || 0).toFixed(4)} €</p>)}
       </div>
     </div>
@@ -146,29 +149,19 @@ function WatchmanDesk({ stopChecks, execution }) {
 
 export default function Office() {
   const now = useNow();
-  const { data: sessions = [] } = useQuery({
-    queryKey: ["officeSession"],
-    queryFn: () => base44.entities.BotSession.filter({ active: true }, "-created_date", 5),
-    refetchInterval: 10000,
-  });
-  const { data: riskRows = [] } = useQuery({
-    queryKey: ["officeRisk"],
-    queryFn: () => base44.entities.RiskConfig.list("-created_date", 1),
-    refetchInterval: 30000,
-  });
+  const { session: lastSession, running, config, mode } = useBot();
   const { data: alerts = [] } = useQuery({
     queryKey: ["officeAlerts"],
     queryFn: () => base44.entities.Alert.list("-created_date", 12),
     refetchInterval: 15000,
   });
 
-  const session = sessions.find(s => s.mode === "live") || sessions[0];
-  const risk = (Array.isArray(riskRows) ? riskRows : riskRows?.items || [])[0] || {};
+  const session = running ? lastSession : null;
+  const risk = config;
   const summary = parseJson(session?.last_cycle_summary);
   const agentsReport = Array.isArray(summary.agents) ? summary.agents : [];
   const execution = Array.isArray(summary.execution) ? summary.execution : [];
   const stopChecks = Array.isArray(summary.stopChecks) ? summary.stopChecks : [];
-  const engine = risk.strategy_engine || summary.engine || "day_trader";
   const working = session?.last_cycle_status === "running";
   const killSwitch = !!risk.kill_switch;
 
@@ -208,11 +201,11 @@ export default function Office() {
           <p className="text-sm text-muted-foreground mt-1">Cada 5 minutos, cada par pasa por estas mesas en orden. Basta con que un agente diga que no para que el bot no compre.</p>
         </div>
         <div className="flex flex-wrap gap-2 text-xs font-mono">
-          <span className={cn("px-2.5 py-1 rounded-md border", engine === "day_trader" ? "border-primary/40 text-primary bg-primary/10" : "border-border text-muted-foreground")}>
-            Motor: {engine === "day_trader" ? "Agentes DayTrader" : "SentinelAI (anterior)"}
+          <span className={cn("px-2.5 py-1 rounded-md border", mode === "live" ? "border-chart-3/40 text-chart-3 bg-chart-3/10" : "border-primary/40 text-primary bg-primary/10")}>
+            {mode === "live" ? "Dinero real" : "Simulado"}
           </span>
           <span className={cn("px-2.5 py-1 rounded-md border flex items-center gap-1", killSwitch ? "border-destructive/50 text-destructive bg-destructive/10" : "border-border text-muted-foreground")}>
-            <Power className="w-3 h-3" />{killSwitch ? "Kill switch ACTIVO: no se compra" : "Kill switch apagado"}
+            <Power className="w-3 h-3" />{killSwitch ? "Freno de emergencia ACTIVO" : "Freno de emergencia apagado"}
           </span>
           <span className="px-2.5 py-1 rounded-md border border-border text-muted-foreground flex items-center gap-1">
             {working ? <Loader2 className="w-3 h-3 animate-spin" /> : <Coffee className="w-3 h-3" />}
@@ -222,12 +215,12 @@ export default function Office() {
       </div>
 
       {!session && (
-        <div className="bg-card rounded-xl border border-border p-6 text-sm text-muted-foreground">La oficina está cerrada: no hay ninguna sesión de bots activa.</div>
+        <div className="bg-card rounded-xl border border-border p-6 text-sm text-muted-foreground">La oficina está cerrada: enciende el bot en el Panel y los agentes empezarán a trabajar en el siguiente ciclo.</div>
       )}
 
-      {session && engine !== "day_trader" && (
+      {session && summary.gate && summary.gate.ok === false && (
         <div className="bg-card rounded-xl border border-chart-3/40 p-4 text-sm text-muted-foreground">
-          El motor activo es SentinelAI, el anterior. Las mesas de los agentes solo trabajan con el motor DayTrader (<span className="font-mono">strategy_engine = day_trader</span> en Riesgo).
+          Los agentes siguen analizando, pero ahora no se abren operaciones: <span className="text-foreground">{summary.gate.reason}</span>.
         </div>
       )}
 

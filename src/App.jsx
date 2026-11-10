@@ -12,17 +12,9 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
-import Dashboard from './pages/Dashboard';
-import Operate from './pages/Operate';
-import Bots from './pages/Bots';
-import Market from './pages/Market';
-import AIAnalysis from './pages/AIAnalysis';
-import RiskManagement from './pages/RiskManagement';
 import History from './pages/History';
-import WalletPage from './pages/Wallet';
 import SettingsPage from './pages/Settings';
-import Alerts from './pages/Alerts';
-import SessionReports from './pages/SessionReports';
+import Panel from './pages/Panel';
 import Office from './pages/Office';
 import ScrollToTop from './components/ScrollToTop';
 import { Toaster as SonnerToaster } from 'sonner';
@@ -59,18 +51,11 @@ const AuthenticatedApp = () => {
       <Route path="/reset-password" element={<ResetPassword />} />
       <Route element={<ProtectedRoute unauthenticatedElement={<Navigate to="/login" replace />} />}>
         <Route element={<Layout />}>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/operar" element={<Operate />} />
+          <Route path="/" element={<Panel />} />
           <Route path="/oficina" element={<Office />} />
-          <Route path="/bots" element={<Bots />} />
-          <Route path="/market" element={<Market />} />
-          <Route path="/ai" element={<AIAnalysis />} />
-          <Route path="/risk" element={<RiskManagement />} />
           <Route path="/history" element={<History />} />
-          <Route path="/wallet" element={<WalletPage />} />
           <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/alerts" element={<Alerts />} />
-          <Route path="/sessions" element={<SessionReports />} />
+          {["/operar", "/bots", "/market", "/ai", "/risk", "/wallet", "/alerts", "/sessions"].map(path => <Route key={path} path={path} element={<Navigate to="/" replace />} />)}
         </Route>
       </Route>
       <Route path="*" element={<PageNotFound />} />
