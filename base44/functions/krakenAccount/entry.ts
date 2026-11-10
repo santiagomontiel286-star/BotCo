@@ -116,14 +116,17 @@ Deno.serve(async (req) => {
   for (const [asset, amount] of Object.entries(rawBalance)) {
     const meta = pairMeta[ASSET_TO_EUR_PAIR[asset]] || null;
     const ticker = meta ? prices[meta.key] : null;
-    const priceEUR = ticker ? parseFloat(ticker.c[0]) : 0;
+    // El efectivo en euros vale 1 € por unidad (antes no contaba en el total)
+    const isEUR = EUR_KEYS.includes(asset);
+    const priceEUR = isEUR ? 1 : ticker ? parseFloat(ticker.c[0]) : 0;
     const valueEUR = amount * priceEUR;
     const open = ticker ? parseFloat(ticker.o) : 0;
-    const change24h = open > 0 ? ((priceEUR - open) / open) * 100 : 0;
+    const change24h = !isEUR && open > 0 ? ((priceEUR - open) / open) * 100 : 0;
 
     totalEUR += valueEUR;
     portfolio.push({
-      asset,
+      asset: isEUR ? 'EUR' : asset,
+      sellable: isEUR || !meta || (amount >= meta.ordermin && valueEUR >= meta.costmin),
       amount,
       decimals: meta?.decimals ?? 2,
       priceEUR,

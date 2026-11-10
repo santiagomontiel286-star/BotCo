@@ -1,6 +1,6 @@
 {
-  "name": "BotCo LIVE tradingLoop \u2014 Every 5 Minutes",
-  "description": "Ciclo oficial \u00fanico: escanea se\u00f1ales y ejecuta tradingTick para Kraken Spot LIVE.",
+  "name": "BotCo LIVE tradingLoop — Every 5 Minutes",
+  "description": "Ciclo único del bot: gestiona posiciones y pasa cada par por los agentes DayTrader (simulado o real según la sesión).",
   "trigger": {
     "condition": null,
     "config": {

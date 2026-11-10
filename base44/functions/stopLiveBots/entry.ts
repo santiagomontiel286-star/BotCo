@@ -1,30 +1,25 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.25';
 
+// Apaga el bot. Con { closeOpenTrades: true } cierra antes las posiciones abiertas.
+// Sin cerrar, las posiciones reales conservan su stop-loss en Kraken.
 Deno.serve(async (req) => {
   try {
     const base44 = createClientFromRequest(req);
     const user = await base44.auth.me();
     if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 });
-
     const payload = await req.json().catch(() => ({}));
     const entities = base44.asServiceRole.entities;
+
     let closeResult = null;
     if (payload.closeOpenTrades === true) {
-      const tick = await base44.functions.invoke('tradingLoop', { forceClose: true });
-      closeResult = tick.data || tick;
+      const res = await base44.functions.invoke('tradingLoop', { closeAll: true });
+      closeResult = res?.data || res;
     }
-
     const now = new Date().toISOString();
-    const bots = await entities.Bot.list();
-    for (const bot of bots.filter(item => item.trading_mode === 'live' || item.live_enabled === true)) {
-      await entities.Bot.update(bot.id, { live_enabled: false, status: 'stopped', last_run_at: now, last_signal: 'LIVE detenido por usuario' });
-    }
-
     const sessions = await entities.BotSession.filter({ active: true });
-    for (const session of sessions) await entities.BotSession.update(session.id, { active: false, stopped_at: now });
-
-    await entities.Alert.create({ title: 'Bots LIVE detenidos', message: payload.closeOpenTrades === true ? 'Bots LIVE detenidos y cierre de operaciones solicitado.' : 'Bots LIVE detenidos sin cierre forzado.', severity: 'info', source: 'stopLiveBots', is_read: false });
-    return Response.json({ ok: true, stoppedBots: bots.length, closeResult });
+    for (const s of sessions) await entities.BotSession.update(s.id, { active: false, stopped_at: now, last_cycle_status: 'ok' });
+    await entities.Alert.create({ title: 'Bot apagado', message: payload.closeOpenTrades ? 'Se han cerrado las posiciones abiertas.' : 'Las posiciones abiertas se mantienen con su stop.', severity: 'info', source: 'stopLiveBots', is_read: false }).catch(() => {});
+    return Response.json({ ok: true, stopped: sessions.length, closeResult });
   } catch (error) {
     return Response.json({ ok: false, error: error.message }, { status: 500 });
   }

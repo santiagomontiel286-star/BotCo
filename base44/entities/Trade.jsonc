@@ -142,6 +142,21 @@
     },
     "notes": {
       "type": "string"
+    },
+    "session_id": {
+      "type": "string",
+      "description": "Sesión del bot que abrió la operación"
+    },
+    "exit_reason": {
+      "type": "string",
+      "enum": [
+        "stop",
+        "target",
+        "time",
+        "manual",
+        "safety"
+      ],
+      "description": "Por qué se cerró"
     }
   },
   "required": [
