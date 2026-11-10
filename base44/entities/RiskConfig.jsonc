@@ -26,7 +26,20 @@
     "min_reward_risk": {
       "type": "number",
       "default": 1.5
-    }
+    },
+    "max_hold_minutes": {
+      "type": "number",
+      "default": 240,
+      "description": "Tiempo máximo de una operación; al superarlo se cierra a mercado"
+    },
+    "strategy_engine": { "type": "string", "enum": ["day_trader", "sentinel"], "default": "day_trader", "description": "Motor de decisión: agentes DayTrader (ORB + Máquina del Tiempo) o el SentinelAI anterior por score" },
+    "session_anchor_utc_hour": { "type": "number", "default": 7, "description": "Hora UTC de inicio de la sesión para el rango de apertura (7 = 08:00 en España)" },
+    "entry_window_utc_start": { "type": "string", "default": "07:15" },
+    "entry_window_utc_end": { "type": "string", "default": "19:00" },
+    "stop_rule": { "type": "string", "enum": ["or-low", "or-mid"], "default": "or-low" },
+    "target_r": { "type": "number", "default": 3, "description": "Objetivo en múltiplos del riesgo" },
+    "tm_min_edge_points": { "type": "number", "default": 5, "description": "Ventaja mínima (puntos sobre el equilibrio con comisiones) que exige la Máquina del Tiempo" },
+    "max_order_eur": { "type": "number", "default": 16 }
   },
   "required": [
     "max_open_trades"
