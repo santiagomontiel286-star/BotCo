@@ -34,7 +34,7 @@ let lastNonce = 0;
 const publicCache = new Map();
 const feeCache = new Map();
 const FALLBACK_TAKER_FEE_PCT = 0.26;
-const DEFAULT_RISK = { kill_switch: false, max_open_trades: 1, max_loss_per_trade_eur: 0.2, max_daily_loss_eur: 0.6, max_trades_per_day: 3, min_reward_risk: 1.5 };
+const DEFAULT_RISK = { kill_switch: false, max_open_trades: 1, max_loss_per_trade_eur: 0.2, max_daily_loss_eur: 0.6, max_trades_per_day: 3, min_reward_risk: 1.5, max_hold_minutes: 240 };
 
 function nextNonce() { const now = Date.now() * 1000; lastNonce = Math.max(now, lastNonce + 1); return String(lastNonce); }
 function tickId() { return `loop_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`; }
@@ -288,16 +288,47 @@ async function getOrderExecution(txid) {
   throw new Error(`Kraken aún no confirmó ejecución para ${txid}`);
 }
 
-async function closeTradeMarket(trade, currentPrice, closeRatio = 1) {
+async function cancelOrder(txid) { return krakenPrivate('CancelOrder', { txid }); }
+async function queryOrder(txid) { const result = await krakenPrivate('QueryOrders', { txid, trades: 'true' }); return result?.[txid] || Object.values(result || {})[0] || null; }
+
+// Cierre a mercado seguro: el stop-loss de Kraken tiene reservado el saldo, así que se cancela
+// antes de vender. Si la venta falla, el stop se vuelve a colocar en el acto: la posición nunca
+// se queda sin red, y nunca queda un stop vivo de una posición ya cerrada.
+async function closeTradeMarket(trade, currentPrice, closeRatio = 1, entities = null) {
   const pair = normalizePair(trade.pair);
+  const rules = await getAssetPairRules(pair);
+  const stopTxid = trade.exchange_stop_txid || '';
+  let stopCancelled = false;
+  if (stopTxid) {
+    try { await cancelOrder(stopTxid); stopCancelled = true; await new Promise(resolve => setTimeout(resolve, 800)); }
+    catch (error) {
+      // Si el stop ya no existe (ejecutado o cancelado), seguimos; si es otro error, no vendemos
+      if (!/Unknown order|EOrder:Invalid order/i.test(error.message)) throw new Error(`No se pudo cancelar el stop ${stopTxid}: ${error.message}`);
+    }
+  }
+  try {
+    return await sellAtMarket(trade, pair, rules, currentPrice, closeRatio);
+  } catch (error) {
+    if (stopCancelled && entities && trade.id) {
+      try {
+        const response = await placeStopLossOrder(pair, Number(trade.amount || trade.executed_volume || 0), Number(trade.stop_loss || 0), rules.pair_decimals);
+        const txid = Array.isArray(response.txid) ? response.txid[0] : '';
+        if (txid) await entities.Trade.update(trade.id, { exchange_stop_txid: txid });
+      } catch (stopError) { error.message += ` · y no se pudo recolocar el stop: ${stopError.message}`; }
+    }
+    throw error;
+  }
+}
+
+async function sellAtMarket(trade, pair, rules, currentPrice, closeRatio) {
   const asset = baseAsset(pair);
   const balances = await getBalances();
   const availableAsset = getAssetBalance(balances, asset);
   const totalAmount = Number(trade.amount || trade.executed_volume || 0);
-  const requestedPartial = totalAmount * closeRatio * 0.995;
-  const requestedFull = totalAmount * 0.995;
-  const rules = await getAssetPairRules(pair);
-  let closeAmount = Math.min(requestedPartial, availableAsset * 0.995);
+  // Sin el recorte del 0,5 % que dejaba "polvo" invendible tras cada cierre
+  const requestedPartial = totalAmount * closeRatio;
+  const requestedFull = totalAmount;
+  let closeAmount = Math.min(requestedPartial, availableAsset);
   let volume = roundDown(closeAmount, rules.lot_decimals);
   if (closeRatio < 1) {
     const remaining = Math.max(0, totalAmount - volume);
@@ -305,7 +336,7 @@ async function closeTradeMarket(trade, currentPrice, closeRatio = 1) {
     const remainingBelowMin = remaining > 0 && ((rules.ordermin && remaining < rules.ordermin) || (rules.costmin && remaining * currentPrice < rules.costmin));
     // Nunca cerrar en parcial si alguna de las dos partes queda por debajo del mínimo: se cierra el 100 %
     if (partBelowMin || remainingBelowMin) {
-      closeAmount = Math.min(requestedFull, availableAsset * 0.995);
+      closeAmount = Math.min(requestedFull, availableAsset);
       volume = roundDown(closeAmount, rules.lot_decimals);
     }
   }
@@ -318,22 +349,24 @@ async function closeTradeMarket(trade, currentPrice, closeRatio = 1) {
   return { response, execution };
 }
 
-function shouldCloseTrade(trade, ticker, forceClose, bot) {
+// Usa el TP y el SL guardados en el trade (los que aprobó riskGate con comisiones incluidas).
+// Antes había un "partial TP" al +0,30 % bruto que en la práctica cerraba el 100 % y, tras
+// comisiones de ida y vuelta, convertía las "ganancias" en pérdidas.
+function shouldCloseTrade(trade, ticker, forceClose, riskConfig) {
   if (forceClose) return { close: true, reason: 'Cierre manual solicitado' };
   const entry = Number(trade.entry_price || 0);
   const amount = Number(trade.amount || 0);
   if (!entry || !amount) return { close: false, reason: 'Trade sin entrada o volumen válido' };
-  const risk = adjustedRisk(bot?.strategy || trade.strategy || 'default', ticker.spreadPct, { takeProfitPct: 0.40, stopLossPct: 0.80, timeoutMinutes: 30 });
   const pnlPct = ((ticker.price - entry) / entry) * (trade.side === 'buy' ? 1 : -1) * 100;
   const ageMs = Date.now() - new Date(trade.entry_date || trade.created_date).getTime();
-  const partialDone = String(trade.notes || '').includes('PARTIAL_TP_DONE');
+  const maxHold = Number(riskConfig?.max_hold_minutes || DEFAULT_RISK.max_hold_minutes);
   const stopLossPrice = Number(trade.stop_loss || 0);
-  if (pnlPct >= 0.30 && !partialDone) return { close: true, partial: true, reason: 'Partial take profit 50% al +0.30% y trailing stop a breakeven', pnlPct };
-  if (stopLossPrice > 0 && ticker.price <= stopLossPrice) return { close: true, reason: stopLossPrice >= entry ? 'Trailing stop breakeven ejecutado' : `SL ${risk.stopLossPct.toFixed(2)}% alcanzado`, pnlPct };
-  if (pnlPct >= risk.takeProfitPct) return { close: true, reason: `TP ${risk.takeProfitPct.toFixed(2)}% alcanzado`, pnlPct };
-  if (pnlPct <= -risk.stopLossPct) return { close: true, reason: `SL -${risk.stopLossPct.toFixed(2)}% alcanzado`, pnlPct };
-  if (ageMs >= risk.timeoutMinutes * 60 * 1000) return { close: true, reason: `Timeout ${risk.timeoutMinutes} minutos`, pnlPct };
-  return { close: false, reason: `Monitoreando hasta ${risk.timeoutMinutes}m`, pnlPct };
+  const takeProfitPrice = Number(trade.take_profit || 0);
+  // El stop lo ejecuta Kraken; esto solo actúa si el precio ya está por debajo y el stop no saltó
+  if (stopLossPrice > 0 && ticker.bid <= stopLossPrice) return { close: true, reason: `SL ${stopLossPrice} alcanzado`, pnlPct };
+  if (takeProfitPrice > 0 && ticker.bid >= takeProfitPrice) return { close: true, reason: `TP ${takeProfitPrice} alcanzado`, pnlPct };
+  if (ageMs >= maxHold * 60 * 1000) return { close: true, reason: `Tiempo máximo ${maxHold} minutos`, pnlPct };
+  return { close: false, reason: `Monitoreando: TP ${takeProfitPrice || '—'} · SL ${stopLossPrice || '—'} · máx ${maxHold}m`, pnlPct };
 }
 
 async function createAlert(entities, title, message, severity = 'info') { try { await entities.Alert.create({ title, message, severity, source: 'tradingLoop LIVE', is_read: false }); } catch (error) { console.log(`Alert skipped: ${error.message}`); } }
@@ -465,7 +498,7 @@ async function ensureExchangeStop({ entities, trade, rules, stopPrice }) {
 
 async function marketCloseAndRecord({ entities, trade, pair, reason, tickId: loopId }) {
   const ticker = await getTicker(pair);
-  const closed = await closeTradeMarket(trade, ticker.price);
+  const closed = await closeTradeMarket(trade, ticker.price, 1, entities);
   const entryCost = Number(trade.cost || (Number(trade.entry_price || 0) * Number(trade.amount || 0)));
   const entryFee = Number(trade.fee || trade.fees || 0);
   const closeCost = Number(closed.execution.cost || 0);
@@ -489,6 +522,33 @@ async function verifyOpenStops({ entities, openTrades, tickId: loopId }) {
     const pair = normalizePair(trade.pair);
     const txid = trade.exchange_stop_txid || '';
     if (txid && openOrders[txid]) { report.push({ tradeId: trade.id, pair: displayPair(pair), ok: true, txid }); continue; }
+    // El stop no está abierto: puede que Kraken ya lo haya EJECUTADO. Comprobarlo antes de
+    // recolocar nada, para no vender saldo que ya no pertenece a este trade.
+    if (txid) {
+      try {
+        const order = await queryOrder(txid);
+        const executed = Number(order?.vol_exec || 0);
+        if (order && order.status === 'closed' && executed > 0) {
+          const entryCost = Number(trade.cost || (Number(trade.entry_price || 0) * Number(trade.amount || 0)));
+          const entryFee = Number(trade.fee || trade.fees || 0);
+          const closeCost = Number(order.cost || 0);
+          const closeFee = Number(order.fee || 0);
+          const exitPrice = Number(order.price || 0) || (executed ? closeCost / executed : 0);
+          const pnl = closeCost - entryCost - entryFee - closeFee;
+          const pnlPct = entryCost ? (pnl / entryCost) * 100 : 0;
+          await entities.Trade.update(trade.id, { status: 'closed', exit_price: exitPrice, close_executed_price: exitPrice, close_executed_volume: executed, close_fee: closeFee, close_cost: closeCost, close_txid: txid, close_order_id: txid, exit_date: new Date().toISOString(), profit_loss: Number(pnl.toFixed(8)), profit_loss_percent: Number(pnlPct.toFixed(4)), closed_by_tick_id: loopId, last_error: '', notes: 'LIVE cerrado por el stop-loss de Kraken' });
+          await createAlert(entities, 'Stop-loss ejecutado en Kraken', `${trade.bot_name} · ${displayPair(pair)} · PnL ${pnl.toFixed(6)} EUR`, 'warning');
+          closedIds.push(trade.id);
+          report.push({ tradeId: trade.id, pair: displayPair(pair), ok: true, closedByStop: true, pnl });
+          continue;
+        }
+      } catch (error) {
+        // Sin poder saber si el stop se ejecutó, no tocar nada este ciclo
+        await entities.Trade.update(trade.id, { last_error: `no se pudo consultar el stop ${txid}: ${error.message}` });
+        report.push({ tradeId: trade.id, pair: displayPair(pair), ok: false, reason: `consulta del stop fallida: ${error.message}` });
+        continue;
+      }
+    }
     const rules = await getAssetPairRules(pair);
     const stop = await ensureExchangeStop({ entities, trade, rules, stopPrice: Number(trade.stop_loss || 0) });
     if (stop.ok) { report.push({ tradeId: trade.id, pair: displayPair(pair), ok: true, recreated: true, txid: stop.txid }); continue; }
@@ -595,11 +655,11 @@ Deno.serve(async (req) => {
       const bot = bots.find(item => item.name === trade.bot_name);
       try {
         const ticker = await getTicker(pair);
-        let decision = shouldCloseTrade(trade, ticker, forceClose, bot);
+        let decision = shouldCloseTrade(trade, ticker, forceClose, riskConfig);
         const contrarySignal = freshSignals.find(signal => signal.side === 'sell' && signal.bot_id === bot?.id && normalizePair(signal.pair) === pair);
         if (!decision.close && contrarySignal) decision = { close: true, reason: `Señal contraria del mismo bot: ${contrarySignal.reason}`, signalId: contrarySignal.id };
         if (!decision.close) { results.push({ action: 'monitoring', tradeId: trade.id, bot: trade.bot_name, pair: displayPair(pair), price: ticker.price, pnlPercent: decision.pnlPct, reason: decision.reason }); continue; }
-        const closed = await closeTradeMarket(trade, ticker.price);
+        const closed = await closeTradeMarket(trade, ticker.price, 1, entities);
         const closeOrderId = closed.execution.txid;
         const entryCost = Number(trade.cost || (Number(trade.entry_price || 0) * Number(trade.amount || 0)));
         const entryFee = Number(trade.fee || trade.fees || 0);
