@@ -46,7 +46,11 @@ globalThis.fetch = async (url, init) => {
 };
 await import('./.loop.mjs');
 const wait = () => new Promise(r => setTimeout(r, 5200)); // la caché pública del motor dura 5 s
-const call = async (body = { autoMode: true }) => (await globalThis.__handler(new Request('http://x', { method: 'POST', body: JSON.stringify(body) }))).json();
+// Cada ciclo automático de la prueba simula que han pasado 5 min (el motor salta ciclos demasiado seguidos)
+const call = async (body = { autoMode: true }, { keepTick = false } = {}) => {
+  if (body.autoMode && !keepTick) for (const s of globalThis.__db.BotSession || []) delete s.last_tick_at;
+  return (await globalThis.__handler(new Request('http://x', { method: 'POST', body: JSON.stringify(body) }))).json();
+};
 const db = globalThis.__db;
 const cfgBase = { entry_window_utc_start: '00:00', entry_window_utc_end: '23:59', session_anchor_utc_hour: anchorHour };
 
@@ -76,11 +80,17 @@ console.log('✓ bloqueo: no corre dos ciclos a la vez');
 // ── 4. SIMULADO: llega al objetivo ──
 t.entry_date = new Date(now - 30 * 60e3).toISOString();
 OHLC[5].ETHEUR = [...c5(true).slice(0, -1), [curBar, '101.6', '109.5', '101.5', '109.2', '0', '9', 1], [curBar + B, '109', '109', '109', '109', '0', '1', 1]];
+M.ethPrice = 104;                      // la vela tocó 109,5 pero al mirar el precio está en 104
+await wait(); r = await call();
+assert.equal(db.Trade[0].status, 'open', 'como en real: un pico que no se ve al mirar no cierra en objetivo');
+console.log('✓ simulado fiel al real: un pico que toca el objetivo entre dos ciclos no cuenta');
+M.ethPrice = 109.2;
 await wait(); r = await call();
 t = db.Trade[0];
 assert.equal(t.status, 'closed'); assert.equal(t.exit_reason, 'target'); assert.ok(t.profit_loss > 0);
 assert.ok(r.agents.find(a => a.pair === 'ETH/EUR').reason.includes('ya se operó'), 'no repite el par el mismo día');
 console.log(`✓ simulado: cierra en objetivo con +${t.profit_loss.toFixed(3)} € (comisiones incluidas) y no repite ETH hoy`);
+M.ethPrice = 0;
 
 // ── 5. Protecciones: stop reciente → pausa ──
 db.Trade.push({ id: 'old', mode: 'demo', session_id: 'S1', pair: 'SOL/EUR', status: 'closed', exit_reason: 'stop', profit_loss: -0.4, entry_date: new Date(now - 90 * 60e3).toISOString(), exit_date: new Date(now - 10 * 60e3).toISOString(), cost: 10 });
@@ -122,6 +132,20 @@ console.log(`✓ real: detecta que el stop saltó, registra ${t.profit_loss.toFi
 db.Trade = []; db.BotSession[0].last_cycle_status = 'ok'; M.balance = { ZEUR: '50' }; OHLC[5].ETHEUR = c5(true);
 await wait(); r = await call(); t = db.Trade.find(x => x.status === 'open'); assert.ok(t);
 M.balance = { ZEUR: '35', XETH: String(t.amount) }; M.privateCalls = [];
+// Seguridad: sin sesión o sin ser administrador no se controla el bot
+r = await call({ autoMode: true, closeTradeId: t.id }); r = await call({ autoMode: true, closeAll: true });
+assert.equal(db.Trade.find(x => x.id === t.id).status, 'open', 'una llamada automática (sin sesión) no puede cerrar posiciones');
+assert.equal(M.privateCalls.filter(c => c.ep === 'AddOrder' || c.ep === 'CancelOrder').length, 0, 'ni toca órdenes en Kraken');
+globalThis.__auth.me = null; r = await call({ closeAll: true }); assert.equal(r.error, 'Unauthorized');
+globalThis.__auth.me = { id: 'x', role: 'user' }; r = await call({ closeAll: true }); assert.match(r.error, /administrador/);
+r = await call({ runOnce: true }); assert.match(r.error, /administrador/);
+delete globalThis.__auth.me;
+db.BotSession[0].last_cycle_status = 'ok'; db.BotSession[0].last_tick_at = new Date().toISOString(); M.privateCalls = [];
+r = await call({ autoMode: true }, { keepTick: true }); assert.equal(r.reason, 'Ciclo reciente', 'no se puede forzar ciclos seguidos');
+assert.equal(M.privateCalls.length, 0);
+assert.equal(db.Trade.find(x => x.id === t.id).status, 'open');
+console.log('✓ seguridad: sin sesión solo corre el ciclo normal (como mucho uno cada 4 min) y nunca cierra posiciones; solo el administrador controla el bot');
+db.BotSession[0].last_cycle_status = 'ok'; M.privateCalls = [];
 r = await call({ closeTradeId: t.id });
 const seq = M.privateCalls.map(c => c.ep + (c.ordertype ? ':' + c.ordertype : ''));
 assert.ok(seq.indexOf('CancelOrder') < seq.indexOf('AddOrder:market'), seq.join(','));
@@ -132,4 +156,11 @@ console.log('✓ real: cierre manual cancela el stop antes de vender (' + seq.jo
 env.BOTCO_LIVE_ENABLED = 'false'; db.BotSession[0].last_cycle_status = 'ok';
 r = await call(); assert.equal(r.ok, false); assert.match(r.error, /bloqueado/); env.BOTCO_LIVE_ENABLED = 'true';
 console.log('✓ real bloqueado si los secretos no lo permiten');
+// Datos del bot: solo el administrador (el motor usa el rol de servicio)
+import fs from 'node:fs';
+for (const f of fs.readdirSync('base44/entities').filter(f => f !== 'User.jsonc')) {
+  const rls = JSON.parse(fs.readFileSync(`base44/entities/${f}`, 'utf8')).rls || {};
+  for (const op of ['create', 'read', 'update', 'delete']) assert.deepEqual(rls[op], { user_condition: { role: 'admin' } }, `${f}.${op}: solo administrador`);
+}
+console.log('✓ datos: configuración, operaciones, sesiones y alertas solo las ve y cambia el administrador');
 console.log('\nTODO OK');

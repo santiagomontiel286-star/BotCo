@@ -7,6 +7,7 @@ Deno.serve(async (req) => {
     const base44 = createClientFromRequest(req);
     const user = await base44.auth.me();
     if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 });
+    if (user.role !== 'admin') return Response.json({ error: 'Solo el administrador controla el bot' }, { status: 403 });
     const payload = await req.json().catch(() => ({}));
     const entities = base44.asServiceRole.entities;
 
