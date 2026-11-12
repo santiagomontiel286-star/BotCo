@@ -1,3 +1,4 @@
+globalThis.__auth ||= {};
 let seq = 0;
 function table(name) {
   const db = globalThis.__db; db[name] ||= [];
@@ -12,5 +13,5 @@ function table(name) {
   };
 }
 export function createClientFromRequest() {
-  return { asServiceRole: { entities: new Proxy({}, { get: (_, n) => table(n) }) }, auth: { me: async () => ({ id: 'u1' }) }, functions: { invoke: async () => ({}) } };
+  return { asServiceRole: { entities: new Proxy({}, { get: (_, n) => table(n) }) }, auth: { me: async () => { const me = 'me' in globalThis.__auth ? globalThis.__auth.me : { id: 'u1', role: 'admin' }; if (!me) throw new Error('no auth'); return me; } }, functions: { invoke: async () => ({}) } };
 }

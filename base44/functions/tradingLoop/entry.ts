@@ -410,13 +410,15 @@ function exitDecision(trade, ticker, cfg, nowMs) {
   return null;
 }
 
-// Simulado: recorre las velas cerradas desde la entrada para ver si tocó stop u objetivo
+// Simulado, igual que en real:
+// - el stop está puesto en Kraken y salta en cualquier momento → se busca en las velas
+// - el objetivo lo vigila el bot cada 5 min → solo cuenta si el precio está ahí al mirar
+//   (antes bastaba con que una vela lo tocara, y el simulado salía más optimista que el real)
 function paperExitFromCandles(trade, candles) {
   const entryMs = tradeTime(trade);
-  const stop = num(trade.stop_loss); const target = num(trade.take_profit);
+  const stop = num(trade.stop_loss);
   for (const c of candles.filter(c => c.time * 1000 >= entryMs)) {
     if (c.low <= stop) return { price: Math.min(stop, c.open) * (1 - PAPER_SLIPPAGE_PCT / 100), reason: `stop ${stop} alcanzado`, exitReason: 'stop' };
-    if (target > 0 && c.high >= target) return { price: target, reason: `objetivo ${target} alcanzado`, exitReason: 'target' };
   }
   return null;
 }
@@ -576,14 +578,23 @@ Deno.serve(async (req) => {
     const base44 = createClientFromRequest(req);
     entities = base44.asServiceRole.entities;
     const payload = await req.json().catch(() => ({}));
-    if (!payload.autoMode) {
+    // Llamada manual (desde la app): solo el administrador. La automática (autoMode) no
+    // necesita sesión, así que SOLO puede ejecutar el ciclo normal: nunca cierres manuales.
+    const manual = !payload.autoMode;
+    if (manual) {
       const user = await base44.auth.me().catch(() => null);
       if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 });
+      if (user.role !== 'admin') return Response.json({ error: 'Solo el administrador controla el bot' }, { status: 403 });
     }
 
     const sessions = await entities.BotSession.filter({ active: true }, '-created_date', 5);
     session = sessions[0];
-    const forceCloseIds = payload.closeAll ? 'all' : payload.closeTradeId ? [payload.closeTradeId] : null;
+    const forceCloseIds = !manual ? null : payload.closeAll ? 'all' : payload.closeTradeId ? [String(payload.closeTradeId)] : null;
+    if (!session && !manual) return Response.json({ ok: true, skipped: true, reason: 'El bot está apagado' });
+
+    // Automática: como mucho un ciclo cada 4 minutos (la automatización va cada 5), aunque alguien llame más veces
+    const lastTick = session?.last_tick_at ? new Date(session.last_tick_at).getTime() : 0;
+    if (!manual && lastTick && Date.now() - lastTick < (CYCLE_MINUTES - 1) * 60000) return Response.json({ ok: true, skipped: true, reason: 'Ciclo reciente' });
     if (!session && !forceCloseIds) return Response.json({ ok: true, skipped: true, reason: 'El bot está apagado' });
 
     // Cierre manual sin sesión activa: se usa la última sesión del modo de esa operación
