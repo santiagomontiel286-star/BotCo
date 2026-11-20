@@ -12,9 +12,9 @@ import {
 // `prefix` es como tradingLoop etiqueta el rechazo de ese agente en el informe del ciclo.
 const AGENTS = [
   { key: "monitor", name: "Monitor de mercado", role: "Vigila si el par está operativo en Kraken y si se mueve de forma anómala", prefix: "Monitor:", icon: Radar, color: "hsl(var(--chart-1))" },
-  { key: "entry", name: "Temporizador de entrada", role: "Espera a que una vela cerrada rompa el rango de apertura", prefix: "Entrada:", icon: Timer, color: "hsl(var(--chart-2))" },
-  { key: "exit", name: "Planificador de salida", role: "Fija stop y objetivo antes de comprar y mira las comisiones", prefix: "Salida:", icon: Target, color: "hsl(var(--chart-3))" },
-  { key: "tm", name: "Máquina del Tiempo", role: "Simula la operación 10.000 veces con 30 días reales", prefix: "Máquina del Tiempo:", icon: Hourglass, color: "hsl(var(--chart-4))" },
+  { key: "entry", name: "Temporizador de entrada", role: "Espera a que una vela cerrada rompa el máximo del canal, con tendencia y volumen a favor", prefix: "Entrada:", icon: Timer, color: "hsl(var(--chart-2))" },
+  { key: "exit", name: "Planificador de salida", role: "Fija el stop por volatilidad (ATR) y el objetivo o stop móvil, y mira las comisiones", prefix: "Salida:", icon: Target, color: "hsl(var(--chart-3))" },
+  { key: "tm", name: "Máquina del Tiempo", role: "Simula la operación 10.000 veces con velas reales y veta los planes claramente malos", prefix: "Máquina del Tiempo:", icon: Hourglass, color: "hsl(var(--chart-4))" },
   { key: "budget", name: "Gestor de presupuesto", role: "Calcula cuánto comprar para no pasar de la pérdida máxima", prefix: "Presupuesto:", icon: Calculator, color: "hsl(var(--chart-5))" },
 ];
 

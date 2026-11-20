@@ -8,7 +8,8 @@ import { createClientFromRequest } from 'npm:@base44/sdk@0.8.25';
 //   2. Comprueba protecciones y límites del día
 //   3. Pasa cada par por la cadena de agentes DayTrader (adaptada de
 //      github.com/Jakeschincariol/day-trader-skill, MIT):
-//      Monitor → Entrada (ORB) → Salida → Máquina del Tiempo → Presupuesto
+//      Monitor → Entrada (ruptura de canal) → Salida (stop ATR) → Máquina del Tiempo → Presupuesto
+//      El perfil (agresivo / equilibrado / cauteloso) fija marco temporal y riesgo.
 //   4. Ejecuta en modo SIMULADO (cartera virtual) o REAL (Kraken), según la sesión
 //
 // Nada aquí promete ganancias: cada agente puede decir que no y casi siempre lo dirá.
@@ -23,40 +24,52 @@ const CYCLE_MINUTES = 5;
 const FALLBACK_TAKER_FEE_PCT = 0.40;   // nivel inicial de Kraken Pro si TradeVolume no responde
 const PAPER_SLIPPAGE_PCT = 0.05;
 
-// Valores por defecto: se usan para cualquier campo que no exista en RiskConfig
+// ── Perfiles de riesgo ──────────────────────────────────────────────────────────────────
+// Estrategia común: ruptura de canal (Donchian, el sistema "Turtle") con filtro de tendencia,
+// stop por ATR y tamaño por pérdida máxima. Cada perfil cambia el marco temporal y cuánto arriesga.
+// Velas más largas = stops más anchos = las comisiones de Kraken (~0,8 % ida y vuelta) pesan menos.
+export const PROFILES = {
+  agresivo: {
+    timeframe_minutes: 60, channel_bars: 24, trend_ema: 0, atr_mult: 3, target_r: 2, trail_exit_bars: 0,
+    max_hold_minutes: 1440, max_loss_per_trade_eur: 1, max_daily_loss_eur: 3, max_trades_per_day: 6, max_open_trades: 2,
+    min_reward_risk: 1, max_fee_r: 0.6, tm_min_edge_points: -15, cooldown_after_stop_minutes: 30, stoploss_guard_limit: 4,
+    max_drawdown_pct: 20, moving_block_pct: 15, pair_cooldown_minutes: 120
+  },
+  equilibrado: {
+    timeframe_minutes: 240, channel_bars: 30, trend_ema: 50, atr_mult: 2, target_r: 0, trail_exit_bars: 12,
+    max_hold_minutes: 20160, max_loss_per_trade_eur: 0.5, max_daily_loss_eur: 1.5, max_trades_per_day: 3, max_open_trades: 1,
+    min_reward_risk: 1.3, max_fee_r: 0.4, tm_min_edge_points: -15, cooldown_after_stop_minutes: 120, stoploss_guard_limit: 2,
+    max_drawdown_pct: 10, moving_block_pct: 10, pair_cooldown_minutes: 720
+  },
+  cauteloso: {
+    timeframe_minutes: 1440, channel_bars: 20, trend_ema: 50, atr_mult: 2.5, target_r: 0, trail_exit_bars: 10,
+    max_hold_minutes: 43200, max_loss_per_trade_eur: 0.35, max_daily_loss_eur: 1, max_trades_per_day: 1, max_open_trades: 2,
+    min_reward_risk: 1.5, max_fee_r: 0.25, tm_min_edge_points: -25, cooldown_after_stop_minutes: 1440, stoploss_guard_limit: 2,
+    max_drawdown_pct: 8, moving_block_pct: 12, pair_cooldown_minutes: 4320
+  }
+};
+export const DEFAULT_PROFILE = 'equilibrado';
+const TIMEFRAMES = [60, 240, 1440];
+const NOMINAL_R = 3;                  // objetivo de referencia para evaluar perfiles sin objetivo fijo (salida por trailing)
+
+// Valores por defecto: perfil equilibrado + ajustes generales
 export const DEFAULTS = {
-  // Modo y capital
+  profile: DEFAULT_PROFILE,
   mode: 'paper',                       // 'paper' (simulado) | 'live' (Kraken real)
   paper_capital_eur: 50,
   kill_switch: false,
-  // Límites de riesgo
-  max_open_trades: 1,
-  max_loss_per_trade_eur: 0.5,         // 1 % de 50 €
-  max_daily_loss_eur: 1.5,
-  max_trades_per_day: 3,
   max_order_eur: 45,
-  min_reward_risk: 1.5,
-  max_hold_minutes: 240,
   max_position_pct: 90,
   cash_buffer_pct: 5,
-  // Protecciones (inspiradas en Freqtrade)
-  cooldown_after_stop_minutes: 60,     // CooldownPeriod: pausa tras un stop-loss
-  stoploss_guard_limit: 2,             // StoplossGuard: n stops en 24 h → sin entradas
-  max_drawdown_pct: 10,                // MaxDrawdown: caída de la sesión → sin entradas
-  // Agentes
-  session_anchor_utc_hour: 7,          // inicio del rango de apertura (07:00 UTC = 08:00 España)
-  or_minutes: 15,
-  entry_window_utc_start: '07:15',
-  entry_window_utc_end: '19:00',
-  stop_rule: 'or-low',
-  target_r: 3,
+  entry_window_utc_start: '00:00',     // cripto opera 24/7
+  entry_window_utc_end: '23:59',
   min_volume_x: 1.0,
-  max_fee_r: 0.5,
-  moving_block_pct: 8,
   tm_runs: 10000,
   tm_seed: 19,
-  tm_min_edge_points: 5
+  ...PROFILES[DEFAULT_PROFILE]
 };
+// Ajustes que se respetan aunque el registro sea antiguo (sin perfil)
+const GENERAL_KEYS = ['mode', 'paper_capital_eur', 'kill_switch', 'max_order_eur'];
 
 // ── Utilidades ──────────────────────────────────────────────────────────────────────────
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -70,7 +83,6 @@ function average(values) { return values.reduce((s, v) => s + v, 0) / Math.max(v
 function hmToMinutes(value) { const [h, m] = String(value || '0:0').split(':').map(Number); return (h || 0) * 60 + (m || 0); }
 function utcMinutes(ms) { const d = new Date(ms); return d.getUTCHours() * 60 + d.getUTCMinutes(); }
 function startOfUtcDay(ms = Date.now()) { const d = new Date(ms); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()); }
-function sessionAnchorMs(nowMs, hour) { const d = new Date(nowMs); const a = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), hour, 0, 0); return a > nowMs ? a - 86400000 : a; }
 function inEntryWindow(ms, cfg) { const m = utcMinutes(ms); return m >= hmToMinutes(cfg.entry_window_utc_start) && m <= hmToMinutes(cfg.entry_window_utc_end); }
 function mulberry32(seed) { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 const tradeTime = trade => new Date(trade.entry_date || trade.created_date).getTime();
@@ -134,7 +146,7 @@ async function getPairRules(pair) {
 }
 
 // Solo velas CERRADAS: Kraken devuelve la vela en formación como última fila
-async function getCandles(pair, interval = 5, limit = 288) {
+async function getCandles(pair, interval = 5, limit = 720) {
   const result = await krakenPublic('OHLC', { pair: normalizePair(pair), interval });
   const key = Object.keys(result).find(k => k !== 'last');
   return (result[key] || []).slice(0, -1).slice(-limit).map(r => ({ time: Number(r[0]), open: num(r[1]), high: num(r[2]), low: num(r[3]), close: num(r[4]), volume: num(r[6]) }));
@@ -168,44 +180,68 @@ export function agentMarketMonitor({ ticker, rules, cfg }) {
   return { ok: true };
 }
 
-// Temporizador de entrada: primera vela de 5 min CERRADA por encima del rango de apertura
-export function agentEntry({ candles, cfg, nowMs }) {
-  const anchor = sessionAnchorMs(nowMs, cfg.session_anchor_utc_hour);
-  const orEnd = anchor + cfg.or_minutes * 60000;
-  if (nowMs < orEnd + 5 * 60000) return { status: 'forming', reason: 'el rango de apertura aún se está formando' };
-  const expected = Math.round(cfg.or_minutes / 5);
-  const range = candles.filter(c => c.time * 1000 >= anchor && c.time * 1000 < orEnd);
-  if (range.length < expected) return { status: 'no_data', reason: `rango incompleto (${range.length}/${expected} velas)` };
-  const rangeHigh = Math.max(...range.map(c => c.high));
-  const rangeLow = Math.min(...range.map(c => c.low));
-  const avgVol = average(range.map(c => c.volume));
-  const after = candles.filter(c => c.time * 1000 >= orEnd);
-  const idx = after.findIndex(c => c.close > rangeHigh && (cfg.min_volume_x <= 0 || c.volume >= cfg.min_volume_x * avgVol));
-  if (idx < 0) return { status: 'waiting', rangeHigh, rangeLow, reason: `esperando ruptura de ${rangeHigh} (último cierre ${after.at(-1)?.close ?? '—'})` };
-  const bar = after[idx];
-  const triggerMs = bar.time * 1000 + 5 * 60000;
-  if (idx < after.length - 1) return { status: 'stale', rangeHigh, rangeLow, reason: `la ruptura fue a las ${new Date(triggerMs).toISOString().slice(11, 16)} UTC; ya es tarde para entrar` };
-  if (!inEntryWindow(triggerMs, cfg)) return { status: 'expired', rangeHigh, rangeLow, reason: 'ruptura fuera de la ventana de entrada' };
-  return { status: 'triggered', entry: bar.close, rangeHigh, rangeLow, triggerTime: new Date(triggerMs).toISOString(), reason: `cierre ${bar.close} por encima del rango ${rangeHigh}` };
+// ── Indicadores ─────────────────────────────────────────────────────────────────────────
+export function ema(values, period) {
+  if (values.length < period) return null;
+  const k = 2 / (period + 1);
+  let e = average(values.slice(0, period));
+  for (let i = period; i < values.length; i++) e = values[i] * k + e * (1 - k);
+  return e;
+}
+export function atr(candles, period = 14) {
+  if (candles.length < period + 1) return null;
+  const tr = [];
+  for (let i = 1; i < candles.length; i++) { const c = candles[i]; const pc = candles[i - 1].close; tr.push(Math.max(c.high - c.low, Math.abs(c.high - pc), Math.abs(c.low - pc))); }
+  let a = average(tr.slice(0, period));
+  for (let i = period; i < tr.length; i++) a = (a * (period - 1) + tr[i]) / period;   // media de Wilder
+  return a;
 }
 
-// Planificador de salida: stop y objetivo ANTES de entrar; rechaza si las comisiones pesan demasiado
-export function agentExit({ entry, rangeHigh, rangeLow, decimals, feePct, spreadPct, cfg }) {
+// Temporizador de entrada: la última vela CERRADA rompe el máximo de las N anteriores (canal Donchian),
+// con tendencia a favor (cierre sobre la EMA) y volumen. Solo rupturas nuevas: si la vela anterior ya
+// había roto, se llega tarde.
+export function agentEntry({ candles, cfg }) {
+  const n = cfg.channel_bars;
+  const need = Math.max(n + 2, cfg.trend_ema + 1, 16, 21);
+  if (candles.length < need) return { status: 'no_data', reason: `pocas velas (${candles.length}/${need})` };
+  const last = candles.at(-1); const prevBar = candles.at(-2);
+  const channelHigh = Math.max(...candles.slice(-n - 1, -1).map(c => c.high));
+  const prevChannelHigh = Math.max(...candles.slice(-n - 2, -2).map(c => c.high));
+  const channelLow = Math.min(...candles.slice(-n - 1, -1).map(c => c.low));
+  const atrValue = atr(candles.slice(-100), 14);
+  if (cfg.trend_ema > 0) {
+    const e = ema(candles.map(c => c.close), cfg.trend_ema);
+    if (e && last.close <= e) return { status: 'waiting', channelHigh, reason: `tendencia en contra: cierre ${last.close} bajo la EMA ${cfg.trend_ema} (${roundTick(e, 6)})` };
+  }
+  if (last.close <= channelHigh) return { status: 'waiting', channelHigh, reason: `esperando cierre por encima de ${channelHigh} (máximo de ${n} velas; último ${last.close})` };
+  if (prevBar.close > prevChannelHigh) return { status: 'stale', channelHigh, reason: 'la ruptura empezó en la vela anterior; ya es tarde para entrar' };
+  const avgVol = average(candles.slice(-21, -1).map(c => c.volume));
+  if (cfg.min_volume_x > 0 && last.volume < cfg.min_volume_x * avgVol) return { status: 'waiting', channelHigh, reason: `ruptura sin volumen (${(last.volume / avgVol).toFixed(2)}× la media)` };
+  if (!atrValue) return { status: 'no_data', reason: 'sin datos para el ATR' };
+  return { status: 'triggered', entry: last.close, channelHigh, channelLow, atr: atrValue, triggerTime: new Date((last.time + cfg.timeframe_minutes * 60) * 1000).toISOString(), reason: `cierre ${last.close} rompe el máximo de ${n} velas (${channelHigh})` };
+}
+
+// Planificador de salida: stop y objetivo ANTES de entrar; rechaza si las comisiones pesan demasiado.
+// target_r = 0 → sin objetivo fijo: la salida es un trailing stop por el mínimo de las últimas velas.
+export function agentExit({ entry, atr: atrValue, decimals, feePct, spreadPct, cfg }) {
   const f = 10 ** Number(decimals ?? 2);
-  const stop = Math.floor((cfg.stop_rule === 'or-mid' ? (rangeHigh + rangeLow) / 2 : rangeLow) * f) / f;
-  if (stop >= entry) return { ok: false, reason: 'el stop quedaría en la entrada o por encima' };
+  const stop = Math.floor((entry - cfg.atr_mult * atrValue) * f) / f;
+  if (!(stop > 0) || stop >= entry) return { ok: false, reason: 'el stop quedaría en la entrada o por encima' };
   const risk = entry - stop;
-  const target = Math.round((entry + cfg.target_r * risk) * f) / f;
+  const trailing = !(cfg.target_r > 0);
+  const targetR = trailing ? NOMINAL_R : cfg.target_r;
+  const target = Math.round((entry + targetR * risk) * f) / f;
   const costPerUnit = entry * (2 * feePct + spreadPct) / 100;
   const feeR = costPerUnit / risk;
-  if (feeR > cfg.max_fee_r) return { ok: false, reason: `las comisiones costarían ${feeR.toFixed(2)} R (máx ${cfg.max_fee_r}): rango demasiado estrecho` };
-  return { ok: true, entry, stop, target, risk, riskPct: Number((risk / entry * 100).toFixed(3)), targetR: cfg.target_r, feeR: Number(feeR.toFixed(3)) };
+  if (feeR > cfg.max_fee_r) return { ok: false, reason: `las comisiones costarían ${feeR.toFixed(2)} R (máx ${cfg.max_fee_r}): stop demasiado cerca` };
+  return { ok: true, entry, stop, target, takeProfit: trailing ? 0 : target, trailing, risk, riskPct: Number((risk / entry * 100).toFixed(3)), targetR, feeR: Number(feeR.toFixed(3)) };
 }
 
-// Máquina del Tiempo: 10.000 simulaciones con velas reales de la misma hora del día (30 días)
+// Máquina del Tiempo: 10.000 simulaciones remuestreando velas reales del mismo momento del día.
+// Es un veto contra planes claramente malos, no una garantía.
 export function agentTimeMachine({ plan, candles, intervalMin, nowMs, maxHoldMin, cfg }) {
-  const slots = Math.round(1440 / intervalMin);
-  const anchorToday = sessionAnchorMs(nowMs, cfg.session_anchor_utc_hour);
+  const slots = Math.max(1, Math.round(1440 / intervalMin));
+  const anchorToday = startOfUtcDay(nowMs);
   const slotOf = ms => Math.floor((((ms - anchorToday) % 86400000) + 86400000) % 86400000 / (intervalMin * 60000));
   const bySession = new Map();
   for (let i = 1; i < candles.length; i++) {
@@ -229,7 +265,7 @@ export function agentTimeMachine({ plan, candles, intervalMin, nowMs, maxHoldMin
   for (let run = 0; run < cfg.tm_runs; run++) {
     let p = entry; let outcome = 0;
     for (let k = 0; k < steps; k++) {
-      const near = pool[((startSlot + k) % slots + Math.floor(rand() * 5) - 2 + slots) % slots];
+      const near = pool[((startSlot + k) % slots + (slots > 4 ? Math.floor(rand() * 5) - 2 : 0) + slots) % slots];
       const r = near[Math.floor(rand() * near.length)];
       if (p * r[2] <= stop) { outcome = -1; break; }       // si toca ambos, cuenta como stop
       if (p * r[1] >= target) { outcome = 1; break; }
@@ -245,12 +281,12 @@ export function agentTimeMachine({ plan, candles, intervalMin, nowMs, maxHoldMin
   const edge = (pTarget - breakeven) * 100;
   const avgNetR = sumR / runs;
   const verdict = Math.abs(edge) < 5 ? 'Cerca del equilibrio' : edge >= 15 ? 'Fuertemente a favor' : edge >= 5 ? 'A favor' : edge <= -15 ? 'Fuertemente en contra' : 'En contra';
-  const ok = edge >= cfg.tm_min_edge_points && avgNetR > 0;
+  const ok = edge >= cfg.tm_min_edge_points;
   return {
     ok, verdict, seed: cfg.tm_seed, runs, days: full.length,
     targetFirstPct: Number((tFirst / runs * 100).toFixed(1)), stopFirstPct: Number((sFirst / runs * 100).toFixed(1)), neitherPct: Number((neither / runs * 100).toFixed(1)),
     edgePoints: Number(edge.toFixed(1)), avgNetR: Number(avgNetR.toFixed(3)),
-    reason: `${verdict}: objetivo antes que stop en ${(pTarget * 100).toFixed(1)} % (necesita ${(breakeven * 100).toFixed(1)} %), R medio neto ${avgNetR.toFixed(3)}${ok ? '' : ' → no compensa'}`
+    reason: `${verdict}: objetivo antes que stop en ${(pTarget * 100).toFixed(1)} % (equilibrio ${(breakeven * 100).toFixed(1)} %, mínimo exigido ${cfg.tm_min_edge_points >= 0 ? '+' : ''}${cfg.tm_min_edge_points} puntos)${ok ? '' : ' → no compensa'}`
   };
 }
 
@@ -278,14 +314,26 @@ export function agentBudget({ plan, ask, feePct, cashEUR, rules, cfg }) {
 // CARTERA, PROTECCIONES Y LÍMITES
 // ═══════════════════════════════════════════════════════════════════════════════════════
 
+// Perfil elegido + ajustes personalizados. Un registro antiguo (sin perfil) usa el perfil
+// equilibrado y solo conserva los ajustes generales: sus valores viejos impedían operar.
+export function resolveConfig(record = {}) {
+  const profile = PROFILES[record.profile] ? record.profile : DEFAULT_PROFILE;
+  const cfg = { ...DEFAULTS, ...PROFILES[profile], profile };
+  const keys = PROFILES[record.profile] ? Object.keys(DEFAULTS) : GENERAL_KEYS;
+  for (const k of keys) {
+    const v = record[k];
+    if (k === 'profile' || v === null || v === undefined || v === '') continue;
+    cfg[k] = typeof DEFAULTS[k] === 'number' ? Number(v) : typeof DEFAULTS[k] === 'boolean' ? !!v : v;
+  }
+  if (!TIMEFRAMES.includes(cfg.timeframe_minutes)) cfg.timeframe_minutes = PROFILES[profile].timeframe_minutes;
+  return cfg;
+}
+
 async function getConfig(entities) {
   try {
     const rows = await entities.RiskConfig.list('-created_date', 1);
-    const record = (Array.isArray(rows) ? rows : rows?.items || [])[0] || {};
-    const cfg = { ...DEFAULTS };
-    for (const [k, v] of Object.entries(record)) if (v !== null && v !== undefined && v !== '' && k in DEFAULTS) cfg[k] = typeof DEFAULTS[k] === 'number' ? Number(v) : v;
-    return cfg;
-  } catch { return { ...DEFAULTS }; }
+    return resolveConfig((Array.isArray(rows) ? rows : rows?.items || [])[0] || {});
+  } catch { return resolveConfig({}); }
 }
 
 const tradeMode = session => (session.mode === 'live' ? 'live' : 'demo');
@@ -412,13 +460,26 @@ function exitDecision(trade, ticker, cfg, nowMs) {
 
 // Simulado: recorre las velas cerradas desde la entrada para ver si tocó stop u objetivo
 function paperExitFromCandles(trade, candles) {
-  const entryMs = tradeTime(trade);
+  // Solo velas desde el último cambio de stop: un stop móvil recién subido no se aplica al pasado
+  const sinceMs = Math.max(tradeTime(trade), trade.stop_updated_at ? new Date(trade.stop_updated_at).getTime() : 0);
   const stop = num(trade.stop_loss); const target = num(trade.take_profit);
-  for (const c of candles.filter(c => c.time * 1000 >= entryMs)) {
+  for (const c of candles.filter(c => c.time * 1000 >= sinceMs)) {
     if (c.low <= stop) return { price: Math.min(stop, c.open) * (1 - PAPER_SLIPPAGE_PCT / 100), reason: `stop ${stop} alcanzado`, exitReason: 'stop' };
     if (target > 0 && c.high >= target) return { price: target, reason: `objetivo ${target} alcanzado`, exitReason: 'target' };
   }
   return null;
+}
+
+// Stop móvil (operaciones sin objetivo fijo): sube el stop al mínimo de las últimas velas. Nunca lo baja.
+async function trailingStop(trade, ticker, rules, cfg) {
+  if (num(trade.take_profit) > 0) return null;
+  const n = cfg.trail_exit_bars > 0 ? cfg.trail_exit_bars : 10;
+  const candles = await getCandles(trade.pair, cfg.timeframe_minutes, n + 5);
+  if (candles.length < n) return null;
+  const f = 10 ** Number(rules.pair_decimals ?? 2);
+  const newStop = Math.floor(Math.min(...candles.slice(-n).map(c => c.low)) * f) / f;
+  if (newStop <= num(trade.stop_loss) || newStop >= ticker.bid * 0.998) return null;
+  return newStop;
 }
 
 async function manageOpenTrades({ entities, session, trades, cfg, forceCloseIds, report }) {
@@ -436,7 +497,15 @@ async function manageOpenTrades({ entities, session, trades, cfg, forceCloseIds,
         const fee = await getTakerFeePct(pair);
         const hit = forced ? null : paperExitFromCandles(trade, await getCandles(pair, 5, 100));
         const decision = forced ? { reason: 'cierre manual', exitReason: 'manual' } : hit || exitDecision(trade, ticker, cfg, nowMs);
-        if (!decision) { report.push({ ...line, action: 'monitoring', reason: `vigilando · stop ${trade.stop_loss} · objetivo ${trade.take_profit}` }); continue; }
+        if (!decision) {
+          const newStop = await trailingStop(trade, ticker, rules, cfg);
+          if (newStop) {
+            trade.stop_loss = newStop; trade.stop_updated_at = new Date().toISOString();
+            await entities.Trade.update(trade.id, { stop_loss: newStop, stop_updated_at: trade.stop_updated_at });
+          }
+          report.push({ ...line, action: 'monitoring', reason: `vigilando · stop ${trade.stop_loss}${newStop ? ' (subido)' : ''} · ${num(trade.take_profit) > 0 ? `objetivo ${trade.take_profit}` : 'stop móvil'}` });
+          continue;
+        }
         const price = hit ? hit.price : ticker.bid * (1 - PAPER_SLIPPAGE_PCT / 100);
         const cost = price * num(trade.amount);
         const result = await recordClose(entities, trade, { price, volume: num(trade.amount), cost, fee: cost * fee / 100, txid: '' }, decision.reason, decision.exitReason);
@@ -457,6 +526,20 @@ async function manageOpenTrades({ entities, session, trades, cfg, forceCloseIds,
         }
         trade.exchange_stop_txid = '';
       }
+      // Stop móvil: se cancela el stop viejo y el bloque siguiente pone el nuevo (o cierra si no puede)
+      const newStop = await trailingStop(trade, ticker, rules, cfg);
+      if (newStop) {
+        let cancelled = !trade.exchange_stop_txid;
+        if (trade.exchange_stop_txid) {
+          try { await krakenPrivate('CancelOrder', { txid: trade.exchange_stop_txid }); cancelled = true; await sleep(800); }
+          catch { cancelled = false; }   // si no se puede cancelar (p. ej. acaba de ejecutarse), se deja como está
+        }
+        if (cancelled) {
+          trade.exchange_stop_txid = ''; trade.stop_loss = newStop; trade.stop_updated_at = new Date().toISOString();
+          await entities.Trade.update(trade.id, { stop_loss: newStop, stop_updated_at: trade.stop_updated_at, exchange_stop_txid: '' });
+          line.trail = newStop;
+        }
+      }
       if (!trade.exchange_stop_txid) {
         try {
           trade.exchange_stop_txid = await livePlaceStop(pair, num(trade.amount), num(trade.stop_loss), rules);
@@ -472,7 +555,7 @@ async function manageOpenTrades({ entities, session, trades, cfg, forceCloseIds,
         }
       }
       const decision = forced ? { reason: 'cierre manual', exitReason: 'manual' } : exitDecision(trade, ticker, cfg, nowMs);
-      if (!decision || decision.exitReason === 'stop') { report.push({ ...line, action: 'monitoring', reason: `stop activo en Kraken (${trade.stop_loss}) · objetivo ${trade.take_profit}` }); continue; }
+      if (!decision || decision.exitReason === 'stop') { report.push({ ...line, action: 'monitoring', reason: `stop activo en Kraken (${trade.stop_loss})${line.trail ? ' (subido)' : ''} · ${num(trade.take_profit) > 0 ? `objetivo ${trade.take_profit}` : 'stop móvil'}` }); continue; }
       const exec = await liveSellAll(trade, rules);
       const result = await recordClose(entities, trade, exec, decision.reason, decision.exitReason);
       trade.status = 'closed'; trade.profit_loss = result.pnl; trade.exit_reason = decision.exitReason; trade.exit_date = new Date().toISOString();
@@ -498,21 +581,24 @@ async function findEntries({ entities, session, trades, cfg, report, execution }
     else if (dailyLossUsed(prot.today) >= cfg.max_daily_loss_eur) Object.assign(gate, { ok: false, reason: `límite de pérdida diaria (${cfg.max_daily_loss_eur} €) alcanzado` });
   }
 
-  const tradedToday = new Set(trades.filter(t => tradeTime(t) >= startOfUtcDay(nowMs)).map(t => normalizePair(t.pair)));
+  // Última entrada por par: tras operar un par se espera pair_cooldown_minutes antes de repetirlo
+  const lastEntryByPair = new Map();
+  for (const t of trades) { const k = normalizePair(t.pair); lastEntryByPair.set(k, Math.max(lastEntryByPair.get(k) || 0, tradeTime(t))); }
   for (const pair of PAIRS) {
     const row = { pair: dp(pair) };
     try {
       if (openTrades.some(t => normalizePair(t.pair) === pair)) throw new Error('Fuera: ya hay una posición abierta en este par');
-      if (tradedToday.has(pair)) throw new Error('Fuera: ya se operó este par hoy (una ruptura por día)');
-      const [ticker, rules, candles] = await Promise.all([getTicker(pair), getPairRules(pair), getCandles(pair, 5, 288)]);
+      const lastEntry = lastEntryByPair.get(pair) || 0;
+      if (nowMs - lastEntry < cfg.pair_cooldown_minutes * 60000) throw new Error(`Fuera: este par se operó hace poco (espera hasta las ${new Date(lastEntry + cfg.pair_cooldown_minutes * 60000).toISOString().slice(0, 16).replace('T', ' ')} UTC)`);
+      const [ticker, rules, candles] = await Promise.all([getTicker(pair), getPairRules(pair), getCandles(pair, cfg.timeframe_minutes, 720)]);
       const market = agentMarketMonitor({ ticker, rules, cfg });
       if (!market.ok) throw new Error(`Monitor: ${market.reason}`);
-      const entry = agentEntry({ candles, cfg, nowMs });
+      const entry = agentEntry({ candles, cfg });
       if (entry.status !== 'triggered') throw new Error(`Entrada: ${entry.reason}`);
       const feePct = await getTakerFeePct(pair);
-      const plan = agentExit({ entry: entry.entry, rangeHigh: entry.rangeHigh, rangeLow: entry.rangeLow, decimals: rules.pair_decimals, feePct, spreadPct: ticker.spreadPct, cfg });
+      const plan = agentExit({ entry: entry.entry, atr: entry.atr, decimals: rules.pair_decimals, feePct, spreadPct: ticker.spreadPct, cfg });
       if (!plan.ok) throw new Error(`Salida: ${plan.reason}`);
-      const tm = agentTimeMachine({ plan, candles: await getCandles(pair, 60, 720), intervalMin: 60, nowMs, maxHoldMin: cfg.max_hold_minutes, cfg });
+      const tm = agentTimeMachine({ plan, candles: cfg.timeframe_minutes === 60 ? candles : await getCandles(pair, cfg.timeframe_minutes, 720), intervalMin: cfg.timeframe_minutes, nowMs, maxHoldMin: cfg.max_hold_minutes, cfg });
       row.timeMachine = tm.reason;
       if (!tm.ok) throw new Error(`Máquina del Tiempo: ${tm.reason}`);
       const cash = await getCashEUR(session, trades);
@@ -527,7 +613,7 @@ async function findEntries({ entities, session, trades, cfg, report, execution }
       const todayTrades = trades.filter(t => tradeTime(t) >= startOfUtcDay(nowMs));
       if (dailyLossUsed(todayTrades) + budget.maxLossEUR > cfg.max_daily_loss_eur) { execution.push({ action: 'signal_rejected', pair: dp(pair), reason: `superaría la pérdida máxima del día (${cfg.max_daily_loss_eur} €)` }); continue; }
 
-      const opened = await openTrade({ entities, session, pair, rules, plan, budget, tm, feePct, ticker });
+      const opened = await openTrade({ entities, session, pair, rules, plan, budget, tm, feePct, ticker, profile: cfg.profile });
       trades.unshift(opened); openTrades = [...openTrades, opened];
       execution.push({ action: 'opened', pair: dp(pair), price: opened.entry_price, stopPrice: opened.stop_loss, reason: `${opened.amount} uds por ${num(opened.cost).toFixed(2)} €` });
     } catch (error) {
@@ -539,15 +625,15 @@ async function findEntries({ entities, session, trades, cfg, report, execution }
   return gate;
 }
 
-async function openTrade({ entities, session, pair, rules, plan, budget, tm, feePct, ticker }) {
+async function openTrade({ entities, session, pair, rules, plan, budget, tm, feePct, ticker, profile }) {
   const mode = tradeMode(session);
-  const base = { exchange: 'kraken', mode, bot_name: BOT_NAME, pair: dp(pair), side: 'buy', status: 'open', session_id: session.id, entry_date: new Date().toISOString(), stop_loss: plan.stop, take_profit: plan.target, confidence: Math.min(0.99, 0.5 + tm.edgePoints / 100), signal_reason: `Ruptura del rango de apertura · ${tm.reason}`, notes: `stop ${plan.stop} · objetivo ${plan.target} (${plan.targetR}R) · pérdida máx ${budget.maxLossEUR} € · límite: ${budget.decidedBy}` };
+  const base = { exchange: 'kraken', mode, bot_name: BOT_NAME, pair: dp(pair), side: 'buy', status: 'open', session_id: session.id, entry_date: new Date().toISOString(), stop_loss: plan.stop, take_profit: plan.takeProfit, trailing: plan.trailing, profile, confidence: Math.max(0.05, Math.min(0.99, 0.5 + tm.edgePoints / 100)), signal_reason: `Perfil ${profile} · ruptura de canal · ${tm.reason}`, notes: `stop ${plan.stop} · ${plan.trailing ? 'sin objetivo fijo (stop móvil)' : `objetivo ${plan.target} (${plan.targetR}R)`} · pérdida máx ${budget.maxLossEUR} € · límite: ${budget.decidedBy}` };
 
   if (mode !== 'live') {
     const price = ticker.ask * (1 + PAPER_SLIPPAGE_PCT / 100);
     const cost = price * budget.qty;
     const trade = await entities.Trade.create({ ...base, entry_price: price, executed_price: price, amount: budget.qty, executed_volume: budget.qty, cost, fee: cost * feePct / 100, fees: cost * feePct / 100 });
-    await createAlert(entities, `Compra simulada en ${dp(pair)}`, `${budget.qty} a ${price.toFixed(rules.pair_decimals)} · stop ${plan.stop} · objetivo ${plan.target}`, 'info');
+    await createAlert(entities, `Compra simulada en ${dp(pair)}`, `${budget.qty} a ${price.toFixed(rules.pair_decimals)} · stop ${plan.stop} · ${plan.trailing ? 'stop móvil' : `objetivo ${plan.target}`}`, 'info');
     return trade;
   }
 
@@ -556,7 +642,7 @@ async function openTrade({ entities, session, pair, rules, plan, budget, tm, fee
   try {
     trade.exchange_stop_txid = await livePlaceStop(pair, exec.volume, plan.stop, rules);
     await entities.Trade.update(trade.id, { exchange_stop_txid: trade.exchange_stop_txid });
-    await createAlert(entities, `Compra real en ${dp(pair)}`, `${exec.volume} a ${exec.price} · stop en Kraken ${plan.stop} · objetivo ${plan.target}`, 'success');
+    await createAlert(entities, `Compra real en ${dp(pair)}`, `${exec.volume} a ${exec.price} · stop en Kraken ${plan.stop} · ${plan.trailing ? 'stop móvil' : `objetivo ${plan.target}`}`, 'success');
   } catch (error) {
     // Sin stop no hay posición: se cierra en el acto
     const out = await liveSellAll(trade, rules);
@@ -618,7 +704,7 @@ Deno.serve(async (req) => {
     const totalPnl = closed.reduce((s, t) => s + num(t.profit_loss), 0);
     const cash = await getCashEUR(session, trades).catch(() => null);
     const summary = {
-      tickAt: new Date().toISOString(), mode: session.mode, engine: 'day_trader', gate,
+      tickAt: new Date().toISOString(), mode: session.mode, engine: 'day_trader', profile: cfg.profile, timeframe: cfg.timeframe_minutes, gate,
       agents, execution: [...positions.map(p => ({ ...p, action: p.action })), ...execution],
       stopChecks: session.mode === 'live' ? positions.map(p => ({ pair: p.pair, ok: p.action !== 'error', recreated: p.stop === 'recolocado', reason: p.reason })) : [],
       cashEUR: cash, totalPnl: Number(totalPnl.toFixed(6)), openTrades: trades.filter(t => t.status === 'open').length, closedTrades: closed.length
