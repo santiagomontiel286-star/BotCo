@@ -2,6 +2,20 @@
   "name": "Trade",
   "type": "object",
   "properties": {
+    "profile": {
+      "type": "string",
+      "description": "Perfil de riesgo con el que se abrió"
+    },
+    "trailing": {
+      "type": "boolean",
+      "default": false,
+      "description": "Sin objetivo fijo: sale por stop móvil"
+    },
+    "stop_updated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Última vez que se subió el stop"
+    },
     "exchange": {
       "type": "string",
       "enum": [

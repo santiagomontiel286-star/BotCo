@@ -1,17 +1,34 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, ShieldCheck, Save, Loader2, FlaskConical, Banknote } from "lucide-react";
+import { ChevronDown, ShieldCheck, Save, Loader2, FlaskConical, Banknote, Turtle, Scale, Flame } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
-import { useBot, RISK_DEFAULTS } from "@/hooks/useBot";
+import { useBot, RISK_DEFAULTS, PROFILES } from "@/hooks/useBot";
+
+// Tarjetas de perfil. Los números de "backtest" salen de datos reales de Kraken (BTC, ETH, SOL, XRP;
+// noviembre de 2026) con el propio motor: orientan, no prometen nada.
+const PROFILE_CARDS = [
+  { key: "cauteloso", icon: Turtle, title: "Cauteloso", tag: "Holdista",
+    text: "Velas diarias. Solo compra rupturas de 20 días con tendencia alcista y aguanta semanas con un stop móvil.",
+    stats: ["Riesgo 0,35 € por operación", "≈ 1 operación cada 2–3 semanas", "Backtest 2 años: ±0 €, peor racha −3,6 €"] },
+  { key: "equilibrado", icon: Scale, title: "Equilibrado", tag: "Recomendado",
+    text: "Velas de 4 horas. Rupturas de 5 días con tendencia a favor; deja correr las ganancias con stop móvil.",
+    stats: ["Riesgo 0,50 € por operación", "≈ 1–2 operaciones por semana", "Backtest 4 meses: +6,6 €, peor racha −4,7 €"] },
+  { key: "agresivo", icon: Flame, title: "Agresivo", tag: "Más riesgo",
+    text: "Velas de 1 hora y objetivo fijo 2R. Más operaciones y más pérdida permitida; las comisiones pesan mucho.",
+    stats: ["Riesgo 1 € por operación", "Hasta 6 operaciones al día", "Último mes (bajista): no encontró entradas que compensaran"] },
+];
+
+const TIMEFRAME_OPTIONS = [{ value: 60, label: "1 hora" }, { value: 240, label: "4 horas" }, { value: 1440, label: "1 día" }];
 
 const RISK_FIELDS = [
-  { key: "max_loss_per_trade_eur", label: "Pérdida máxima por operación", unit: "€", step: "0.1", help: "Lo máximo que puede perder una operación si salta el stop, con comisiones. Recomendado: 1 % del capital." },
+  { key: "max_loss_per_trade_eur", label: "Pérdida máxima por operación", unit: "€", step: "0.1", help: "Lo máximo que puede perder una operación si salta el stop, con comisiones." },
   { key: "max_daily_loss_eur", label: "Pérdida máxima al día", unit: "€", step: "0.1", help: "Al llegar aquí, no abre más operaciones hasta mañana." },
   { key: "max_trades_per_day", label: "Operaciones máximas al día", unit: "", step: "1", help: "Menos operaciones, menos comisiones." },
+  { key: "max_open_trades", label: "Posiciones abiertas a la vez", unit: "", step: "1" },
   { key: "max_order_eur", label: "Tamaño máximo de una compra", unit: "€", step: "1", help: "Ninguna compra superará esta cantidad." },
 ];
 const PROTECTION_FIELDS = [
@@ -20,21 +37,34 @@ const PROTECTION_FIELDS = [
   { key: "max_drawdown_pct", label: "Caída máxima de la sesión", unit: "%", step: "1", help: "Si el capital cae este porcentaje, el bot deja de abrir operaciones." },
 ];
 const ADVANCED_FIELDS = [
-  { key: "target_r", label: "Objetivo (veces el riesgo)", unit: "R", step: "0.5", help: "3R = intenta ganar el triple de lo que arriesga." },
+  { key: "timeframe_minutes", label: "Velas de la estrategia", type: "select", options: TIMEFRAME_OPTIONS, help: "Más largas = stops más anchos = las comisiones pesan menos." },
+  { key: "channel_bars", label: "Ruptura del máximo de", unit: "velas", step: "1" },
+  { key: "trend_ema", label: "Filtro de tendencia (EMA)", unit: "velas", step: "10", help: "Solo compra si el precio está sobre esta media. 0 = sin filtro." },
+  { key: "atr_mult", label: "Distancia del stop", unit: "× ATR", step: "0.5" },
+  { key: "target_r", label: "Objetivo (veces el riesgo)", unit: "R", step: "0.5", help: "0 = sin objetivo fijo: sale con el stop móvil y deja correr las ganancias." },
+  { key: "trail_exit_bars", label: "Stop móvil: mínimo de las últimas", unit: "velas", step: "1", help: "Solo cuando el objetivo es 0." },
+  { key: "max_hold_minutes", label: "Tiempo máximo por operación", unit: "min", step: "60" },
+  { key: "pair_cooldown_minutes", label: "Espera antes de repetir un par", unit: "min", step: "60" },
   { key: "min_reward_risk", label: "Beneficio/riesgo mínimo tras comisiones", unit: "", step: "0.1" },
-  { key: "tm_min_edge_points", label: "Ventaja mínima de la Máquina del Tiempo", unit: "puntos", step: "1", help: "Cuánto por encima del equilibrio tiene que salir la simulación." },
-  { key: "max_hold_minutes", label: "Tiempo máximo por operación", unit: "min", step: "15" },
-  { key: "session_anchor_utc_hour", label: "Inicio del rango de apertura (hora UTC)", unit: "h", step: "1", help: "7 = 08:00 en España (09:00 en verano)." },
-  { key: "entry_window_utc_start", label: "Primera entrada posible (UTC)", unit: "", type: "time" },
-  { key: "entry_window_utc_end", label: "Última entrada posible (UTC)", unit: "", type: "time" },
+  { key: "max_fee_r", label: "Comisiones máximas", unit: "R", step: "0.05", help: "Rechaza operaciones cuyo stop está tan cerca que las comisiones se comen el riesgo." },
+  { key: "tm_min_edge_points", label: "Veto de la Máquina del Tiempo", unit: "puntos", step: "5", help: "Rechaza si la simulación sale peor que esto respecto al equilibrio (negativo = solo veta lo claramente malo)." },
 ];
+const NEGATIVE_OK = new Set(["tm_min_edge_points"]);
+const PROFILE_KEYS = Object.keys(PROFILES.equilibrado);
+const isCustomized = form => PROFILES[form.profile] && PROFILE_KEYS.some(k => Number(form[k]) !== Number(PROFILES[form.profile][k]));
 
 function Field({ field, value, onChange }) {
   return (
     <label className="block">
       <span className="text-sm text-foreground">{field.label}</span>
       <div className="flex items-center gap-2 mt-1.5">
-        <Input type={field.type || "number"} step={field.step} value={value ?? ""} onChange={e => onChange(field.key, e.target.value)} className="font-mono max-w-[160px]" />
+        {field.type === "select" ? (
+          <select value={value ?? ""} onChange={e => onChange(field.key, Number(e.target.value))} className="h-9 rounded-md border border-input bg-transparent px-3 text-sm max-w-[160px]">
+            {field.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        ) : (
+          <Input type={field.type || "number"} step={field.step} value={value ?? ""} onChange={e => onChange(field.key, e.target.value)} className="font-mono max-w-[160px]" />
+        )}
         {field.unit && <span className="text-xs text-muted-foreground">{field.unit}</span>}
       </div>
       {field.help && <span className="block text-[11px] text-muted-foreground mt-1">{field.help}</span>}
@@ -72,11 +102,17 @@ export default function SettingsPage() {
   };
   const save = async (values = form, message = "Ajustes guardados") => {
     const payload = toPayload(values);
-    const bad = Object.entries(payload).find(([k, v]) => typeof RISK_DEFAULTS[k] === "number" && (!Number.isFinite(v) || v < 0));
+    const bad = Object.entries(payload).find(([k, v]) => typeof RISK_DEFAULTS[k] === "number" && (!Number.isFinite(v) || (v < 0 && !NEGATIVE_OK.has(k))));
     if (bad) return toast.error("Revisa los valores: hay un número no válido");
     setSaving(true);
     try { await saveConfig(payload); toast.success(message); } catch (e) { toast.error(e.message); } finally { setSaving(false); }
   };
+  const chooseProfile = key => {
+    const next = { ...form, ...PROFILES[key], profile: key };
+    setForm(next);
+    save(next, `Perfil ${PROFILE_CARDS.find(p => p.key === key).title.toLowerCase()} activado${running ? ": se aplica en el próximo ciclo" : ""}`);
+  };
+  const customized = isCustomized(form);
   const chooseMode = mode => {
     if (running) return toast.error("Apaga el bot en el Panel antes de cambiar de modo");
     if (mode === "live") return setConfirmLive(true);
@@ -109,6 +145,30 @@ export default function SettingsPage() {
         )}
       </Section>
 
+      <Section title="Perfil del bot" description="Elige cuánto arriesga. Cambia el marco temporal, el stop y los límites de golpe; las posiciones abiertas mantienen su stop.">
+        <div className="grid sm:grid-cols-3 gap-3">
+          {PROFILE_CARDS.map(p => {
+            const active = form.profile === p.key;
+            return (
+              <button key={p.key} onClick={() => chooseProfile(p.key)} disabled={saving}
+                className={cn("text-left rounded-lg border p-4 transition-colors disabled:opacity-60", active ? "border-primary bg-primary/10" : "border-border hover:border-muted-foreground/40")}>
+                <div className="flex items-center justify-between mb-2">
+                  <p.icon className={cn("w-5 h-5", active ? "text-primary" : "text-muted-foreground")} />
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{active && customized ? "Personalizado" : p.tag}</span>
+                </div>
+                <p className="text-sm font-semibold text-foreground">{p.title}</p>
+                <p className="text-xs text-muted-foreground mt-1">{p.text}</p>
+                <ul className="mt-3 space-y-1">{p.stats.map(st => <li key={st} className="text-[11px] text-muted-foreground">· {st}</li>)}</ul>
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-[11px] text-muted-foreground mt-3">
+          Los backtests usan datos reales de Kraken y las comisiones de 0,40 %, pero el pasado no garantiza nada. Prueba cada perfil en simulado antes de pasar a real.
+          {customized && " Has cambiado valores del perfil: vuelve a pulsarlo para restaurarlos."}
+        </p>
+      </Section>
+
       <Section title="Límites de riesgo" description="Se comprueban antes de cada compra. Las ventas para salir nunca se bloquean.">
         <div className="grid sm:grid-cols-2 gap-5">{RISK_FIELDS.map(f => <Field key={f.key} field={f} value={form[f.key]} onChange={set} />)}</div>
       </Section>
@@ -128,7 +188,7 @@ export default function SettingsPage() {
         <button onClick={() => setShowAdvanced(s => !s)} className="w-full flex items-center justify-between p-5">
           <div className="text-left">
             <h3 className="text-sm font-semibold text-foreground">Ajustes avanzados de los agentes</h3>
-            <p className="text-xs text-muted-foreground mt-0.5">Solo si sabes lo que cambias. Los valores por defecto están probados.</p>
+            <p className="text-xs text-muted-foreground mt-0.5">La estrategia del perfil: marco temporal, ruptura, stop y salida. Cambiarlos marca el perfil como personalizado.</p>
           </div>
           <ChevronDown className={cn("w-4 h-4 text-muted-foreground transition-transform", showAdvanced && "rotate-180")} />
         </button>

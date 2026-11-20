@@ -63,11 +63,13 @@
     "risk_profile": {
       "type": "string",
       "enum": [
+        "cauteloso",
+        "equilibrado",
+        "agresivo",
         "conservador",
-        "balanceado",
-        "agresivo"
+        "balanceado"
       ],
-      "default": "conservador"
+      "default": "equilibrado"
     },
     "pairs": {
       "type": "array",

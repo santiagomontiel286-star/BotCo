@@ -2,6 +2,7 @@ import { createClientFromRequest } from 'npm:@base44/sdk@0.8.25';
 
 // Enciende el bot: crea una sesión activa en modo simulado o real según RiskConfig.mode.
 // Simulado: cartera virtual de paper_capital_eur. Real: el capital es el saldo en EUR de Kraken.
+const PROFILE_NAMES = ['agresivo', 'equilibrado', 'cauteloso'];
 let lastNonce = 0;
 function nextNonce() { lastNonce = Math.max(Date.now() * 1000, lastNonce + 1); return String(lastNonce); }
 
@@ -49,7 +50,7 @@ Deno.serve(async (req) => {
     for (const s of await entities.BotSession.filter({ active: true })) await entities.BotSession.update(s.id, { active: false, stopped_at: now });
     const session = await entities.BotSession.create({
       active: true, mode: mode === 'live' ? 'live' : 'demo', assigned_capital: Number(capital.toFixed(2)), started_at: now,
-      last_tick_at: now, last_cycle_status: 'ok', risk_profile: 'conservador', total_trades: 0, total_pnl: 0, last_error: ''
+      last_tick_at: now, last_cycle_status: 'ok', risk_profile: PROFILE_NAMES.includes(config.profile) ? config.profile : 'equilibrado', total_trades: 0, total_pnl: 0, last_error: ''
     });
     await entities.Alert.create({ title: mode === 'live' ? 'Bot encendido en REAL' : 'Bot encendido en SIMULADO', message: `Capital de la sesión: ${capital.toFixed(2)} €. El primer ciclo llega en menos de 5 minutos.`, severity: mode === 'live' ? 'warning' : 'info', source: 'startLiveBots', is_read: false }).catch(() => {});
     return Response.json({ ok: true, session });

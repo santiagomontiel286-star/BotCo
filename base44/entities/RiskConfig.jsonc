@@ -2,6 +2,55 @@
   "name": "RiskConfig",
   "type": "object",
   "properties": {
+    "profile": {
+      "type": "string",
+      "enum": [
+        "agresivo",
+        "equilibrado",
+        "cauteloso"
+      ],
+      "default": "equilibrado",
+      "description": "Perfil de riesgo: fija marco temporal, stop, objetivo y límites"
+    },
+    "timeframe_minutes": {
+      "type": "number",
+      "default": 240,
+      "description": "Velas de la estrategia: 60, 240 o 1440 minutos"
+    },
+    "channel_bars": {
+      "type": "number",
+      "default": 30,
+      "description": "Entra cuando el cierre supera el máximo de estas velas"
+    },
+    "trend_ema": {
+      "type": "number",
+      "default": 50,
+      "description": "Solo entra con el cierre sobre esta EMA (0 = sin filtro)"
+    },
+    "atr_mult": {
+      "type": "number",
+      "default": 2,
+      "description": "Distancia del stop en ATR"
+    },
+    "trail_exit_bars": {
+      "type": "number",
+      "default": 12,
+      "description": "Stop móvil: mínimo de estas velas (si no hay objetivo fijo)"
+    },
+    "max_fee_r": {
+      "type": "number",
+      "default": 0.4,
+      "description": "Coste máximo de comisiones en R"
+    },
+    "moving_block_pct": {
+      "type": "number",
+      "default": 10
+    },
+    "pair_cooldown_minutes": {
+      "type": "number",
+      "default": 720,
+      "description": "Espera antes de repetir un par"
+    },
     "kill_switch": {
       "type": "boolean",
       "default": false,
@@ -25,25 +74,25 @@
     },
     "min_reward_risk": {
       "type": "number",
-      "default": 1.5
+      "default": 1.3
     },
     "max_hold_minutes": {
       "type": "number",
-      "default": 240,
+      "default": 20160,
       "description": "Tiempo máximo de una operación; al superarlo se cierra a mercado"
     },
     "session_anchor_utc_hour": {
       "type": "number",
       "default": 7,
-      "description": "Hora UTC de inicio de la sesión para el rango de apertura (7 = 08:00 en España)"
+      "description": "Obsoleto (estrategia de rango de apertura); tradingLoop ya no lo usa"
     },
     "entry_window_utc_start": {
       "type": "string",
-      "default": "07:15"
+      "default": "00:00"
     },
     "entry_window_utc_end": {
       "type": "string",
-      "default": "19:00"
+      "default": "23:59"
     },
     "stop_rule": {
       "type": "string",
@@ -55,13 +104,13 @@
     },
     "target_r": {
       "type": "number",
-      "default": 3,
-      "description": "Objetivo en múltiplos del riesgo"
+      "default": 0,
+      "description": "Objetivo en múltiplos del riesgo (0 = sin objetivo fijo, stop móvil)"
     },
     "tm_min_edge_points": {
       "type": "number",
-      "default": 5,
-      "description": "Ventaja mínima (puntos sobre el equilibrio con comisiones) que exige la Máquina del Tiempo"
+      "default": -15,
+      "description": "Veto de la Máquina del Tiempo: puntos respecto al equilibrio con comisiones (negativo = solo veta lo claramente malo)"
     },
     "max_order_eur": {
       "type": "number",
@@ -83,7 +132,7 @@
     },
     "cooldown_after_stop_minutes": {
       "type": "number",
-      "default": 60,
+      "default": 120,
       "description": "Pausa de entradas tras un stop-loss"
     },
     "stoploss_guard_limit": {
